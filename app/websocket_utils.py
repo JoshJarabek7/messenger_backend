@@ -48,20 +48,32 @@ class SessionManager:
         """
         engine = get_db()
         with Session(engine) as session:
-            if not is_online:
-                # Check if user has any remaining active sessions
-                active_sessions = session.exec(
-                    UserSession.select().where(UserSession.user_id == user_id)
-                ).all()
-                
-                # Only mark as offline if there are no active sessions
-                if not active_sessions:
-                    session.exec(User.update().where(User.id == user_id).values(is_online=is_online))
-                    session.commit()
-            else:
-                # If marking online, update immediately
-                session.exec(User.update().where(User.id == user_id).values(is_online=is_online))
-                session.commit()
+            try:
+                if not is_online:
+                    # Check if user has any remaining active sessions
+                    active_sessions = session.exec(
+                        select(UserSession).where(UserSession.user_id == user_id)
+                    ).all()
+                    
+                    # Only mark as offline if there are no active sessions
+                    if not active_sessions:
+                        print(f"Marking user {user_id} as offline")
+                        user = session.exec(select(User).where(User.id == user_id)).first()
+                        if user:
+                            user.is_online = is_online
+                            session.add(user)
+                            session.commit()
+                else:
+                    # If marking online, update immediately
+                    print(f"Marking user {user_id} as online")
+                    user = session.exec(select(User).where(User.id == user_id)).first()
+                    if user:
+                        user.is_online = is_online
+                        session.add(user)
+                        session.commit()
+            except Exception as e:
+                print(f"Error updating user status for {user_id}: {e}")
+                raise
 
     def update_user_last_active(self, user_id: UUID):
         """
@@ -69,8 +81,16 @@ class SessionManager:
         """
         engine = get_db()
         with Session(engine) as session:
-            session.exec(User.update(User.id == user_id).values(last_active=datetime.now(UTC)))
-            session.commit()
+            try:
+                print(f"Updating last active time for user {user_id}")
+                user = session.exec(select(User).where(User.id == user_id)).first()
+                if user:
+                    user.last_active = datetime.now(UTC)
+                    session.add(user)
+                    session.commit()
+            except Exception as e:
+                print(f"Error updating last active time for {user_id}: {e}")
+                raise
 
     def create_user_session(self, user_id: UUID, session_id: str):
         """
@@ -78,8 +98,19 @@ class SessionManager:
         """
         engine = get_db()
         with Session(engine) as session:
-            session.exec(UserSession.insert().values(user_id=user_id, session_id=session_id))
-            session.commit()
+            try:
+                print(f"Creating session for user {user_id} with session ID {session_id}")
+                new_session = UserSession(
+                    user_id=user_id,
+                    session_id=session_id,
+                    connected_at=datetime.now(UTC),
+                    last_ping=datetime.now(UTC)
+                )
+                session.add(new_session)
+                session.commit()
+            except Exception as e:
+                print(f"Error creating session for {user_id}: {e}")
+                raise
 
     def delete_user_session(self, user_id: UUID, session_id: str):
         """
@@ -87,8 +118,19 @@ class SessionManager:
         """
         engine = get_db()
         with Session(engine) as session:
-            session.exec(UserSession.delete(UserSession.user_id == user_id, UserSession.session_id == session_id))
-            session.commit()
+            try:
+                print(f"Deleting session for user {user_id} with session ID {session_id}")
+                stmt = select(UserSession).where(
+                    UserSession.user_id == user_id,
+                    UserSession.session_id == session_id
+                )
+                user_session = session.exec(stmt).first()
+                if user_session:
+                    session.delete(user_session)
+                    session.commit()
+            except Exception as e:
+                print(f"Error deleting session for {user_id}: {e}")
+                raise
 
 """USER MANAGEMENT"""
 
@@ -105,12 +147,17 @@ class UserManager:
         """Get a user by their ID."""
         engine = get_db()
         with Session(engine) as session:
-            user = session.exec(
-                select(User).where(User.id == user_id)
-            ).first()
-            if not user:
-                raise HTTPException(status_code=404, detail="User not found")
-            return user
+            try:
+                print(f"Fetching user by ID {user_id}")
+                user = session.exec(
+                    select(User).where(User.id == user_id)
+                ).first()
+                if not user:
+                    raise HTTPException(status_code=404, detail="User not found")
+                return user
+            except Exception as e:
+                print(f"Error fetching user by ID {user_id}: {e}")
+                raise
 
     def get_user_by_email(self, email: str) -> User | None:
         """Get a user by their email."""

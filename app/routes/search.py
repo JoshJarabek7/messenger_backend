@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlmodel import Session, select, or_
+from sqlmodel import Session, select, or_, outerjoin, and_
 from typing import List, Optional
 from uuid import UUID
 
@@ -44,26 +44,31 @@ async def search_global(
             "username": user.username,
             "display_name": user.display_name,
             "avatar_url": user.avatar_url,
-            "email": user.email if workspace_id else None
+            "email": user.email
         }
         for user in users
     ]
 
-    # Search for workspaces
-    # Only search workspaces the user is a member of
-    workspace_query = select(Workspace).where(
-        Workspace.name.ilike(f"%{query}%")
-    ).join(WorkspaceMember).where(WorkspaceMember.user_id == current_user.id)
+    # Search for all workspaces and include membership status
+    workspace_query = (
+        select(Workspace, WorkspaceMember)
+        .outerjoin(WorkspaceMember, and_(
+            WorkspaceMember.workspace_id == Workspace.id,
+            WorkspaceMember.user_id == current_user.id
+        ))
+        .where(Workspace.name.ilike(f"%{query}%"))
+    )
 
-    workspaces = session.exec(workspace_query).all()
+    workspaces_with_membership = session.exec(workspace_query).all()
     results["workspaces"] = [
         {
             "id": str(workspace.id),
             "name": workspace.name,
             "icon_url": workspace.icon_url,
-            "slug": workspace.slug
+            "slug": workspace.slug,
+            "is_member": bool(member)
         }
-        for workspace in workspaces
+        for workspace, member in workspaces_with_membership
     ]
 
     return results 

@@ -142,3 +142,60 @@ async def create_workspace(
         session.commit()
         session.refresh(new_workspace)
         return WorkspaceRead.model_validate(new_workspace.model_dump()) 
+
+@router.post("/{workspace_id}/join")
+async def join_workspace(
+    workspace_id: UUID,
+    current_user: User = Depends(get_current_user),
+    engine: Engine = Depends(get_db)
+):
+    """Join a workspace."""
+    with Session(engine) as session:
+        # Check if workspace exists
+        workspace = session.exec(select(Workspace).where(Workspace.id == workspace_id)).first()
+        if not workspace:
+            raise HTTPException(status_code=404, detail="Workspace not found")
+        
+        # Check if already a member
+        existing_member = session.exec(
+            select(WorkspaceMember).where(
+                WorkspaceMember.workspace_id == workspace_id,
+                WorkspaceMember.user_id == current_user.id
+            )
+        ).first()
+        
+        if existing_member:
+            raise HTTPException(status_code=400, detail="Already a member of this workspace")
+        
+        # Add user as member
+        member = WorkspaceMember(
+            workspace_id=workspace_id,
+            user_id=current_user.id,
+            role="member",
+            joined_at=datetime.now(UTC)
+        )
+        session.add(member)
+        
+        # Add user to all public channels in the workspace
+        public_channels = session.exec(
+            select(Channel).where(
+                Channel.workspace_id == workspace_id,
+                Channel.channel_type == ChannelType.PUBLIC
+            )
+        ).all()
+        
+        for channel in public_channels:
+            channel_member = ChannelMember(
+                channel_id=channel.id,
+                user_id=current_user.id,
+                joined_at=datetime.now(UTC)
+            )
+            session.add(channel_member)
+        
+        session.commit()
+        
+        return {
+            "id": str(workspace.id),
+            "name": workspace.name,
+            "slug": workspace.slug
+        } 

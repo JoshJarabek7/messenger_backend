@@ -1,8 +1,12 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routes import auth, websocket, workspaces, messages, search
+from app.routes import auth, websocket, workspaces, messages, search, channels
+from app.db import create_db_and_tables
 
 app = FastAPI()
+
+# Create database tables at startup
+create_db_and_tables()
 
 # CORS middleware configuration
 app.add_middleware(
@@ -19,6 +23,7 @@ app.include_router(websocket)
 app.include_router(workspaces)
 app.include_router(messages)
 app.include_router(search)
+app.include_router(channels.router)
 
 @app.get("/")
 async def root():
