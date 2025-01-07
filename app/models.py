@@ -118,3 +118,25 @@ class UserSession(SQLModel, table=True):
 
     # Relationship
     user: "User" = Relationship(back_populates="sessions")
+
+class DirectMessageConversation(SQLModel, table=True):
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    participant_1_id: UUID = Field(foreign_key="user.id")
+    participant_2_id: UUID = Field(foreign_key="user.id")
+    created_at: datetime = Field(default_factory=get_current_time)
+    updated_at: datetime = Field(default_factory=get_current_time)
+
+    # Relationships
+    messages: List["DirectMessage"] = Relationship(back_populates="conversation")
+
+class DirectMessage(SQLModel, table=True):
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    content: str
+    sender_id: UUID = Field(foreign_key="user.id")
+    conversation_id: UUID = Field(foreign_key="directmessageconversation.id")
+    created_at: datetime = Field(default_factory=get_current_time)
+    updated_at: datetime = Field(default_factory=get_current_time)
+
+    # Relationships
+    conversation: DirectMessageConversation = Relationship(back_populates="messages")
+    sender: "User" = Relationship()

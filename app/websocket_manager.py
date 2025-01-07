@@ -32,6 +32,7 @@ class ConnectionManager:
         self.active_connections: Dict[UUID, Dict[str, WebSocket]] = {}  # user_id -> {connection_id: websocket}
         self.channel_subscribers: Dict[UUID, Set[UUID]] = {}  # channel_id -> set of user_ids
         self.workspace_subscribers: Dict[UUID, Set[UUID]] = {}  # workspace_id -> set of user_ids
+        self.conversation_subscribers: Dict[UUID, Set[UUID]] = {}  # conversation_id -> set of user_ids
         self.session_manager = SessionManager()
         self.user_manager = UserManager()
         self.user_session_manager = UserSessionManager()
@@ -110,6 +111,21 @@ class ConnectionManager:
             self.workspace_subscribers[workspace_id].discard(user_id)
             if not self.workspace_subscribers[workspace_id]:
                 del self.workspace_subscribers[workspace_id]
+
+    def subscribe_to_conversation(self, user_id: UUID, conversation_id: UUID):
+        """Subscribe a user to conversation updates."""
+        print(f"Adding user {user_id} to conversation {conversation_id} subscribers")
+        if conversation_id not in self.conversation_subscribers:
+            self.conversation_subscribers[conversation_id] = set()
+        self.conversation_subscribers[conversation_id].add(user_id)
+        print(f"Conversation {conversation_id} subscribers: {self.conversation_subscribers[conversation_id]}")
+
+    def unsubscribe_from_conversation(self, user_id: UUID, conversation_id: UUID):
+        """Unsubscribe a user from conversation updates."""
+        if conversation_id in self.conversation_subscribers:
+            self.conversation_subscribers[conversation_id].discard(user_id)
+            if not self.conversation_subscribers[conversation_id]:
+                del self.conversation_subscribers[conversation_id]
 
     async def broadcast_to_channel(self, channel_id: UUID, message_type: WebSocketMessageType, data: Any):
         """Broadcast a message to all subscribers of a channel."""
@@ -211,6 +227,41 @@ class ConnectionManager:
                 "timestamp": datetime.now(UTC).isoformat()
             }
         )
+
+    async def broadcast_to_users(self, user_ids: list[UUID], message_type: WebSocketMessageType, data: dict):
+        """Broadcast a message to specific users."""
+        message = {
+            "type": message_type,
+            "data": data
+        }
+        for user_id in user_ids:
+            if str(user_id) in self.active_connections:
+                websocket = self.active_connections[str(user_id)]
+                await websocket.send_json(message)
+
+    async def broadcast_to_conversation(self, conversation_id: UUID, message_type: WebSocketMessageType, data: Any):
+        """Broadcast a message to all subscribers of a conversation."""
+        if conversation_id not in self.conversation_subscribers:
+            print(f"No subscribers for conversation {conversation_id}")
+            return
+        
+        payload = {
+            "type": message_type,
+            "data": data
+        }
+        
+        print(f"Broadcasting to conversation {conversation_id}: {payload}")
+        json_payload = json.dumps(payload, cls=UUIDEncoder)
+        
+        for user_id in self.conversation_subscribers[conversation_id]:
+            print(f"Sending to user {user_id}")
+            if user_id in self.active_connections:
+                for websocket in self.active_connections[user_id].values():
+                    try:
+                        await websocket.send_text(json_payload)
+                        print(f"Successfully sent to user {user_id}")
+                    except Exception as e:
+                        print(f"Error sending to user {user_id}: {e}")
 
 # Create global instance
 manager = ConnectionManager() 

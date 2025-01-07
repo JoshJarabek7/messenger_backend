@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routes import auth, websocket, workspaces, messages, search, channels
+from app.routes import auth, websocket, workspaces, messages, search, channels, users, direct_messages
 from app.db import create_db_and_tables
 
 app = FastAPI()
@@ -23,7 +23,9 @@ app.include_router(websocket)
 app.include_router(workspaces)
 app.include_router(messages)
 app.include_router(search)
-app.include_router(channels.router)
+app.include_router(channels)
+app.include_router(users)
+app.include_router(direct_messages)
 
 @app.get("/")
 async def root():
