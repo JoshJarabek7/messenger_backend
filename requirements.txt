@@ -1,2 +1,9 @@
-"fastapi[standard]"
+fastapi[standard]
 uvicorn
+sqlalchemy
+sqlmodel
+passlib[bcrypt]
+pydantic[email]
+python-jose[cryptography]
+psycopg2-binary
+python-dotenv

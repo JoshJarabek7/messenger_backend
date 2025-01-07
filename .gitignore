@@ -177,7 +177,8 @@ cython_debug/
 .LSOverride
 
 # Icon must end with two \r
-Icon
+Icon
+
 
 # Thumbnails
 ._*
@@ -210,3 +211,7 @@ Temporary Items
 
 # Built Visual Studio Code Extensions
 *.vsix
+
+.env*
+Dockerfile.dev
+docker-compose.dev.yml
