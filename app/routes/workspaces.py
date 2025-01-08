@@ -7,23 +7,17 @@ from pydantic import BaseModel
 import re
 from datetime import datetime, UTC
 
-from app.db import get_db
-from app.models import Workspace, Channel, User, WorkspaceMember, ChannelMember, ChannelType
-from app.auth_utils import get_current_user
+from app.utils.db import get_db
+from app.models import Workspace, Conversation, User, WorkspaceMember, ChannelMember, ChannelType
+from app.utils.auth import get_current_user
+from app.schemas import WorkspaceInfo, ConversationInfo
+from app.utils.access import verify_workspace_access, get_accessible_conversations
 
 router = APIRouter(prefix="/api/workspaces", tags=["workspaces"])
 
 class WorkspaceCreate(BaseModel):
     name: str
     description: str | None = None
-
-class WorkspaceRead(BaseModel):
-    id: UUID
-    name: str
-    description: str | None = None
-    slug: str
-    created_at: datetime
-    created_by_id: UUID
 
 def generate_unique_slug(name: str, engine: Engine = Depends(get_db)) -> str:
     """Generate a unique slug from the workspace name."""
@@ -43,7 +37,7 @@ def generate_unique_slug(name: str, engine: Engine = Depends(get_db)) -> str:
         
         return slug
 
-@router.get("", response_model=List[WorkspaceRead])
+@router.get("", response_model=List[WorkspaceInfo])
 async def get_user_workspaces(
     current_user: User = Depends(get_current_user),
     engine: Engine = Depends(get_db)
@@ -57,9 +51,9 @@ async def get_user_workspaces(
             .where(WorkspaceMember.user_id == current_user.id)
             .order_by(Workspace.created_at.desc())
         ).all()
-        return [WorkspaceRead.model_validate(ws.model_dump()) for ws in workspaces]
+        return [WorkspaceInfo.model_validate(ws.model_dump()) for ws in workspaces]
 
-@router.get("/{workspace_id}/channels", response_model=List[Channel])
+@router.get("/{workspace_id}/channels", response_model=List[ConversationInfo])
 async def get_workspace_channels(
     workspace_id: UUID,
     current_user: User = Depends(get_current_user),
@@ -67,26 +61,25 @@ async def get_workspace_channels(
 ):
     """Get all channels in a workspace that the user has access to."""
     with Session(engine) as session:
-        # Check if user is a member of the workspace
-        workspace_member = session.exec(
-            select(WorkspaceMember).where(
-                WorkspaceMember.workspace_id == workspace_id,
-                WorkspaceMember.user_id == current_user.id
+        # Verify workspace access
+        verify_workspace_access(session, workspace_id, current_user.id)
+        
+        # Get accessible conversation IDs
+        conversation_ids = get_accessible_conversations(session, current_user.id, workspace_id)
+        
+        # Get channels
+        channels = session.exec(
+            select(Conversation)
+            .where(
+                Conversation.id.in_(conversation_ids),
+                Conversation.conversation_type != ChannelType.DIRECT
             )
-        ).first()
+            .order_by(Conversation.created_at.desc())
+        ).all()
         
-        if not workspace_member:
-            raise HTTPException(status_code=403, detail="Not a member of this workspace")
-        
-        # Get all channels the user has access to
-        query = select(Channel).where(Channel.workspace_id == workspace_id)
-        query = query.where(Channel.channel_type == ChannelType.PUBLIC)
-        query = query.order_by(Channel.created_at.desc())
-        channels = session.exec(query).all()
-        
-        return channels
+        return [ConversationInfo.model_validate(channel.model_dump()) for channel in channels]
 
-@router.post("", response_model=WorkspaceRead)
+@router.post("", response_model=WorkspaceInfo)
 async def create_workspace(
     workspace: WorkspaceCreate,
     current_user: User = Depends(get_current_user),
@@ -118,12 +111,11 @@ async def create_workspace(
         session.add(workspace_member)
         
         # Create a default "general" channel
-        general_channel = Channel(
+        general_channel = Conversation(
             name="general",
             description="General discussion",
             workspace_id=new_workspace.id,
-            channel_type=ChannelType.PUBLIC,
-            is_default=True,
+            conversation_type=ChannelType.PUBLIC,
             created_at=datetime.now(UTC),
             updated_at=datetime.now(UTC)
         )
@@ -141,7 +133,7 @@ async def create_workspace(
         
         session.commit()
         session.refresh(new_workspace)
-        return WorkspaceRead.model_validate(new_workspace.model_dump()) 
+        return WorkspaceInfo.model_validate(new_workspace.model_dump())
 
 @router.post("/{workspace_id}/join")
 async def join_workspace(
@@ -178,9 +170,9 @@ async def join_workspace(
         
         # Add user to all public channels in the workspace
         public_channels = session.exec(
-            select(Channel).where(
-                Channel.workspace_id == workspace_id,
-                Channel.channel_type == ChannelType.PUBLIC
+            select(Conversation).where(
+                Conversation.workspace_id == workspace_id,
+                Conversation.conversation_type == ChannelType.PUBLIC
             )
         ).all()
         

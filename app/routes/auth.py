@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends, Response, Request
 from pydantic import BaseModel, EmailStr
-from app.auth_utils import auth_utils, get_current_user
-from app.websocket_utils import UserManager
+from app.utils.auth import auth_utils, get_current_user
+from app.websocket import UserManager
 from app.models import User
 from typing import Optional
 

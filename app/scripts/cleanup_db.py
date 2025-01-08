@@ -1,5 +1,5 @@
 from sqlmodel import Session, SQLModel
-from app.db import get_db
+from app.utils.db import get_db
 
 def cleanup_database():
     """Delete all data from all tables."""

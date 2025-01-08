@@ -1,11 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from sqlmodel import Session, select, or_
-from typing import List, Optional
+from typing import Optional
 from uuid import UUID
 
-from app.db import get_session
+from app.utils.db import get_session
 from app.models import User, WorkspaceMember
-from app.auth_utils import get_current_user
+from app.utils.auth import get_current_user
 
 router = APIRouter(prefix="/api/users", tags=["users"])
 

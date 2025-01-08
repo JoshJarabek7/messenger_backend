@@ -1,16 +1,71 @@
 from typing import Optional, List
 from sqlmodel import Field, SQLModel, Relationship
 from uuid import UUID, uuid4
-from datetime import datetime, UTC
+from datetime import datetime
 from enum import Enum
-
-def get_current_time():
-    return datetime.now(UTC)
+from app.utils.time import get_current_time
 
 class ChannelType(str, Enum):
     PUBLIC = "public"
     PRIVATE = "private"
     DIRECT = "direct"
+
+class FileType(str, Enum):
+    IMAGE = "image"
+    DOCUMENT = "document"
+    SPREADSHEET = "spreadsheet"
+    PRESENTATION = "presentation"
+    PDF = "pdf"
+    VIDEO = "video"
+    AUDIO = "audio"
+    OTHER = "other"
+
+    @classmethod
+    def from_mime_type(cls, mime_type: str) -> "FileType":
+        """Determine FileType from MIME type"""
+        mime_map = {
+            "image/": cls.IMAGE,
+            "video/": cls.VIDEO,
+            "audio/": cls.AUDIO,
+            "application/pdf": cls.PDF,
+            "application/vnd.ms-excel": cls.SPREADSHEET,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": cls.SPREADSHEET,
+            "application/msword": cls.DOCUMENT,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document": cls.DOCUMENT,
+            "application/vnd.ms-powerpoint": cls.PRESENTATION,
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation": cls.PRESENTATION,
+        }
+        
+        for mime_prefix, file_type in mime_map.items():
+            if mime_type.startswith(mime_prefix):
+                return file_type
+        return cls.OTHER
+
+    @classmethod
+    def from_filename(cls, filename: str) -> "FileType":
+        """Determine FileType from file extension"""
+        ext = filename.lower().split(".")[-1] if "." in filename else ""
+        ext_map = {
+            "pdf": cls.PDF,
+            "doc": cls.DOCUMENT,
+            "docx": cls.DOCUMENT,
+            "xls": cls.SPREADSHEET,
+            "xlsx": cls.SPREADSHEET,
+            "ppt": cls.PRESENTATION,
+            "pptx": cls.PRESENTATION,
+            "jpg": cls.IMAGE,
+            "jpeg": cls.IMAGE,
+            "png": cls.IMAGE,
+            "gif": cls.IMAGE,
+            "webp": cls.IMAGE,
+            "mp4": cls.VIDEO,
+            "mov": cls.VIDEO,
+            "avi": cls.VIDEO,
+            "mp3": cls.AUDIO,
+            "wav": cls.AUDIO,
+            "ogg": cls.AUDIO,
+        }
+        return ext_map.get(ext, cls.OTHER)
 
 class WorkspaceMember(SQLModel, table=True):
     workspace_id: UUID = Field(foreign_key="workspace.id", primary_key=True)
@@ -75,16 +130,19 @@ class Channel(SQLModel, table=True):
 
 class Message(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
-    content: str
+    content: Optional[str] = None  # Making content optional since a message might just have attachments
     user_id: UUID = Field(foreign_key="user.id")
-    channel_id: UUID = Field(foreign_key="channel.id")
+    channel_id: Optional[UUID] = Field(default=None, foreign_key="channel.id")
+    conversation_id: Optional[UUID] = Field(default=None, foreign_key="conversation.id")
     parent_id: Optional[UUID] = Field(default=None, foreign_key="message.id")
     created_at: datetime = Field(default_factory=get_current_time)
     updated_at: datetime = Field(default_factory=get_current_time)
 
     # Relationships
+    attachments: List["FileAttachment"] = Relationship(back_populates="message")
     user: "User" = Relationship(back_populates="messages")
-    channel: Channel = Relationship(back_populates="messages")
+    channel: Optional[Channel] = Relationship(back_populates="messages")
+    conversation: Optional["Conversation"] = Relationship(back_populates="messages")
     reactions: List["Reaction"] = Relationship(back_populates="message")
     replies: List["Message"] = Relationship()  # For thread replies
 
@@ -101,13 +159,18 @@ class Reaction(SQLModel, table=True):
 
 class FileAttachment(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
-    filename: str
-    file_type: str
+    original_filename: str  # Original filename from user
+    s3_key: str  # UUID-based key in S3
+    file_type: FileType = Field(default=FileType.OTHER)
+    mime_type: str  # Store the actual MIME type for precise handling
     file_size: int
-    file_url: str
+    uploaded_at: datetime = Field(default_factory=get_current_time)
+    upload_completed: bool = Field(default=False)  # Track if the file was successfully uploaded
     message_id: UUID = Field(foreign_key="message.id")
     user_id: UUID = Field(foreign_key="user.id")
-    uploaded_at: datetime = Field(default_factory=get_current_time)
+    
+    # Relationships
+    message: Message = Relationship(back_populates="attachments")
 
 class UserSession(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
@@ -119,24 +182,15 @@ class UserSession(SQLModel, table=True):
     # Relationship
     user: "User" = Relationship(back_populates="sessions")
 
-class DirectMessageConversation(SQLModel, table=True):
+class Conversation(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
-    participant_1_id: UUID = Field(foreign_key="user.id")
-    participant_2_id: UUID = Field(foreign_key="user.id")
+    conversation_type: ChannelType = Field(default=ChannelType.DIRECT)  # Reusing ChannelType enum
+    participant_1_id: Optional[UUID] = Field(default=None, foreign_key="user.id")
+    participant_2_id: Optional[UUID] = Field(default=None, foreign_key="user.id")
+    workspace_id: Optional[UUID] = Field(default=None, foreign_key="workspace.id")
     created_at: datetime = Field(default_factory=get_current_time)
     updated_at: datetime = Field(default_factory=get_current_time)
 
     # Relationships
-    messages: List["DirectMessage"] = Relationship(back_populates="conversation")
-
-class DirectMessage(SQLModel, table=True):
-    id: UUID = Field(default_factory=uuid4, primary_key=True)
-    content: str
-    sender_id: UUID = Field(foreign_key="user.id")
-    conversation_id: UUID = Field(foreign_key="directmessageconversation.id")
-    created_at: datetime = Field(default_factory=get_current_time)
-    updated_at: datetime = Field(default_factory=get_current_time)
-
-    # Relationships
-    conversation: DirectMessageConversation = Relationship(back_populates="messages")
-    sender: "User" = Relationship()
+    messages: List[Message] = Relationship(back_populates="conversation")
+    workspace: Optional[Workspace] = Relationship()

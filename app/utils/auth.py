@@ -1,12 +1,11 @@
 from datetime import datetime, timedelta, UTC
-from typing import Optional
-from fastapi import HTTPException, Depends, Cookie, Request
+from fastapi import HTTPException, Cookie, Request
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from pydantic import BaseModel
 from uuid import UUID
 from app.models import User
-from app.websocket_utils import UserManager
+from app.websocket import UserManager
 from os import getenv
 # JWT Configuration
 SECRET_KEY = getenv("JWT_SECRET_KEY")

@@ -1,6 +1,6 @@
 from sqlmodel import SQLModel, create_engine
 from app.models import *  # This will import all models
-from app.db import DATABASE_URL
+from app.utils.db import DATABASE_URL
 
 def init_db():
     """Initialize the database and create all tables."""

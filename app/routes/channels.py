@@ -1,114 +1,120 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 from sqlalchemy import Engine
 from typing import List
 from uuid import UUID
-from datetime import datetime, UTC
+from pydantic import BaseModel
 
-from app.db import get_db
-from app.models import Channel, Message, User, ChannelMember, ChannelType
-from app.auth_utils import get_current_user
-from app.websocket_manager import manager, WebSocketMessageType
+from app.utils.db import get_db
+from app.models import User, ChannelMember
+from app.utils.auth import get_current_user
+from app.websocket import manager
+from app.schemas import ChannelMemberInfo
+from app.utils.access import verify_conversation_access
 
 router = APIRouter(prefix="/api/channels", tags=["channels"])
 
-@router.get("/{channel_id}/messages")
-async def get_channel_messages(
+class ChannelMemberCreate(BaseModel):
+    user_id: UUID
+    is_admin: bool = False
+
+@router.post("/{channel_id}/members")
+async def add_channel_member(
     channel_id: UUID,
-    page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=50, le=100),
+    member: ChannelMemberCreate,
     current_user: User = Depends(get_current_user),
     engine: Engine = Depends(get_db)
 ):
-    """Get paginated messages from a channel."""
+    """Add a member to a channel."""
     with Session(engine) as session:
-        # Check if channel exists
-        channel = session.exec(select(Channel).where(Channel.id == channel_id)).first()
-        if not channel:
-            raise HTTPException(status_code=404, detail="Channel not found")
+        # Verify access and get channel
+        conversation = verify_conversation_access(session, channel_id, current_user.id, require_admin=True)
         
-        # For non-public channels, check if user is a member
-        if channel.channel_type != ChannelType.PUBLIC:
-            member = session.exec(
-                select(ChannelMember).where(
-                    ChannelMember.channel_id == channel_id,
-                    ChannelMember.user_id == current_user.id
-                )
-            ).first()
-            if not member:
-                raise HTTPException(status_code=403, detail="Not a member of this channel")
+        # Check if user is already a member
+        existing_member = session.exec(
+            select(ChannelMember).where(
+                ChannelMember.channel_id == channel_id,
+                ChannelMember.user_id == member.user_id
+            )
+        ).first()
         
-        # Calculate offset
-        offset = (page - 1) * page_size
+        if existing_member:
+            raise HTTPException(status_code=400, detail="User is already a member of this channel")
         
-        # Get messages with user information
-        messages = session.exec(
-            select(Message)
-            .where(Message.channel_id == channel_id)
-            .order_by(Message.created_at.asc())
-            .offset(offset)
-            .limit(page_size)
+        # Add new member
+        new_member = ChannelMember(
+            channel_id=channel_id,
+            user_id=member.user_id,
+            is_admin=member.is_admin
+        )
+        session.add(new_member)
+        session.commit()
+        
+        # Subscribe new member to channel
+        manager.subscribe_to_channel(member.user_id, channel_id)
+        
+        return {"status": "success"}
+
+@router.delete("/{channel_id}/members/{user_id}")
+async def remove_channel_member(
+    channel_id: UUID,
+    user_id: UUID,
+    current_user: User = Depends(get_current_user),
+    engine: Engine = Depends(get_db)
+):
+    """Remove a member from a channel."""
+    with Session(engine) as session:
+        # Allow self-removal or require admin access
+        require_admin = user_id != current_user.id
+        conversation = verify_conversation_access(session, channel_id, current_user.id, require_admin=require_admin)
+        
+        # Remove member
+        member = session.exec(
+            select(ChannelMember).where(
+                ChannelMember.channel_id == channel_id,
+                ChannelMember.user_id == user_id
+            )
+        ).first()
+        
+        if member:
+            session.delete(member)
+            session.commit()
+            
+            # Unsubscribe user from channel
+            manager.unsubscribe_from_channel(user_id, channel_id)
+        
+        return {"status": "success"}
+
+@router.get("/{channel_id}/members", response_model=List[ChannelMemberInfo])
+async def get_channel_members(
+    channel_id: UUID,
+    current_user: User = Depends(get_current_user),
+    engine: Engine = Depends(get_db)
+):
+    """Get all members of a channel."""
+    with Session(engine) as session:
+        # Verify access to channel
+        conversation = verify_conversation_access(session, channel_id, current_user.id)
+        
+        # Get all members with user info
+        members = session.exec(
+            select(ChannelMember, User)
+            .join(User, ChannelMember.user_id == User.id)
+            .where(ChannelMember.channel_id == channel_id)
         ).all()
         
-        # Convert to dict and include user information
+        # Convert to response model
         return [
-            {
-                **message.model_dump(),
-                "user": session.exec(select(User).where(User.id == message.user_id)).first().model_dump(
-                    exclude={"hashed_password", "email"}
-                )
-            }
-            for message in messages
-        ]
-
-@router.post("/{channel_id}/messages")
-async def create_channel_message(
-    channel_id: UUID,
-    message: dict,
-    current_user: User = Depends(get_current_user),
-    engine: Engine = Depends(get_db)
-):
-    """Create a new message in a channel."""
-    with Session(engine) as session:
-        # Check if channel exists
-        channel = session.exec(select(Channel).where(Channel.id == channel_id)).first()
-        if not channel:
-            raise HTTPException(status_code=404, detail="Channel not found")
-        
-        # For non-public channels, check if user is a member
-        if channel.channel_type != ChannelType.PUBLIC:
-            member = session.exec(
-                select(ChannelMember).where(
-                    ChannelMember.channel_id == channel_id,
-                    ChannelMember.user_id == current_user.id
-                )
-            ).first()
-            if not member:
-                raise HTTPException(status_code=403, detail="Not a member of this channel")
-        
-        # Create message
-        new_message = Message(
-            content=message["content"],
-            user_id=current_user.id,
-            channel_id=channel_id,
-            created_at=datetime.now(UTC),
-            updated_at=datetime.now(UTC)
-        )
-        session.add(new_message)
-        session.commit()
-        session.refresh(new_message)
-        
-        # Get full message data with user info
-        message_data = {
-            **new_message.model_dump(),
-            "user": current_user.model_dump(exclude={"hashed_password", "email"})
-        }
-        
-        # Broadcast to channel subscribers via WebSocket
-        await manager.broadcast_to_channel(
-            channel_id,
-            "message_sent",
-            message_data
-        )
-        
-        return message_data 
+            ChannelMemberInfo(
+                user={
+                    "id": str(user.id),
+                    "username": user.username,
+                    "display_name": user.display_name,
+                    "avatar_url": user.avatar_url,
+                    "is_online": user.is_online
+                },
+                is_admin=member.is_admin,
+                joined_at=member.joined_at
+            )
+            for member, user in members
+        ] 
