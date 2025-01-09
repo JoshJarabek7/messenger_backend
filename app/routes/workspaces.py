@@ -8,7 +8,7 @@ import re
 from datetime import datetime, UTC
 
 from app.utils.db import get_db
-from app.models import Workspace, Conversation, User, WorkspaceMember, ChannelMember, ChannelType
+from app.models import Workspace, Conversation, User, WorkspaceMember, ConversationMember, ChannelType
 from app.utils.auth import get_current_user
 from app.schemas import WorkspaceInfo, ConversationInfo
 from app.utils.access import verify_workspace_access, get_accessible_conversations
@@ -22,8 +22,15 @@ class WorkspaceCreate(BaseModel):
 def generate_unique_slug(name: str, engine: Engine = Depends(get_db)) -> str:
     """Generate a unique slug from the workspace name."""
     # Convert to lowercase and replace spaces/special chars with hyphens
-    base_slug = re.sub(r'[^\w\s-]', '', name.lower())
-    base_slug = re.sub(r'[-\s]+', '-', base_slug).strip('-')
+    base_slug = name.lower().strip()
+    # Replace spaces with hyphens first
+    base_slug = base_slug.replace(' ', '-')
+    # Then remove any other special characters
+    base_slug = re.sub(r'[^\w\-]', '', base_slug)
+    # Replace multiple hyphens with a single hyphen
+    base_slug = re.sub(r'-+', '-', base_slug)
+    # Remove leading/trailing hyphens
+    base_slug = base_slug.strip('-')
     
     # Try the base slug first
     slug = base_slug
@@ -51,7 +58,15 @@ async def get_user_workspaces(
             .where(WorkspaceMember.user_id == current_user.id)
             .order_by(Workspace.created_at.desc())
         ).all()
-        return [WorkspaceInfo.model_validate(ws.model_dump()) for ws in workspaces]
+        
+        # Convert UUIDs to strings in the model dump
+        workspace_data = []
+        for ws in workspaces:
+            data = ws.model_dump()
+            data["id"] = str(data["id"])
+            workspace_data.append(WorkspaceInfo.model_validate(data))
+        
+        return workspace_data
 
 @router.get("/{workspace_id}/channels", response_model=List[ConversationInfo])
 async def get_workspace_channels(
@@ -77,7 +92,16 @@ async def get_workspace_channels(
             .order_by(Conversation.created_at.desc())
         ).all()
         
-        return [ConversationInfo.model_validate(channel.model_dump()) for channel in channels]
+        # Convert UUIDs to strings in the model dump
+        channel_data = []
+        for channel in channels:
+            data = channel.model_dump()
+            data["id"] = str(data["id"])
+            if data.get("workspace_id"):
+                data["workspace_id"] = str(data["workspace_id"])
+            channel_data.append(ConversationInfo.model_validate(data))
+        
+        return channel_data
 
 @router.post("", response_model=WorkspaceInfo)
 async def create_workspace(
@@ -87,6 +111,16 @@ async def create_workspace(
 ):
     """Create a new workspace and make the current user its owner."""
     with Session(engine) as session:
+        # Check if workspace with same name exists
+        existing_workspace = session.exec(
+            select(Workspace).where(Workspace.name == workspace.name)
+        ).first()
+        if existing_workspace:
+            raise HTTPException(
+                status_code=400,
+                detail="A workspace with this name already exists"
+            )
+
         # Generate a unique slug
         slug = generate_unique_slug(workspace.name, engine)
         
@@ -109,10 +143,11 @@ async def create_workspace(
             role="owner"
         )
         session.add(workspace_member)
+        session.commit()
         
         # Create a default "general" channel
         general_channel = Conversation(
-            name="general",
+            name="General",
             description="General discussion",
             workspace_id=new_workspace.id,
             conversation_type=ChannelType.PUBLIC,
@@ -123,16 +158,19 @@ async def create_workspace(
         session.commit()
         session.refresh(general_channel)
         
-        # Add creator to the general channel
-        channel_member = ChannelMember(
-            channel_id=general_channel.id,
+        # Add creator to the channel
+        channel_member = ConversationMember(
+            conversation_id=general_channel.id,
             user_id=current_user.id,
-            is_admin=True
+            is_admin=True,
+            joined_at=datetime.now(UTC)
         )
         session.add(channel_member)
-        
         session.commit()
-        session.refresh(new_workspace)
+
+        # Convert workspace ID to string for response
+        new_workspace.id = str(new_workspace.id)
+        
         return WorkspaceInfo.model_validate(new_workspace.model_dump())
 
 @router.post("/{workspace_id}/join")
@@ -177,7 +215,7 @@ async def join_workspace(
         ).all()
         
         for channel in public_channels:
-            channel_member = ChannelMember(
+            channel_member = ConversationMember(
                 channel_id=channel.id,
                 user_id=current_user.id,
                 joined_at=datetime.now(UTC)
@@ -190,4 +228,19 @@ async def join_workspace(
             "id": str(workspace.id),
             "name": workspace.name,
             "slug": workspace.slug
+        } 
+
+@router.get("/exists/{name}")
+async def check_workspace_exists(
+    name: str,
+    engine: Engine = Depends(get_db)
+):
+    """Check if a workspace with the given name exists."""
+    with Session(engine) as session:
+        existing_workspace = session.exec(
+            select(Workspace).where(Workspace.name == name)
+        ).first()
+        
+        return {
+            "exists": existing_workspace is not None
         } 

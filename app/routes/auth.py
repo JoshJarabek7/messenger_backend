@@ -1,12 +1,11 @@
 from fastapi import APIRouter, HTTPException, Depends, Response, Request
 from pydantic import BaseModel, EmailStr
 from app.utils.auth import auth_utils, get_current_user
-from app.websocket import UserManager
+from app.managers.user_manager import user_manager
 from app.models import User
 from typing import Optional
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
-user_manager = UserManager()
 
 class UserCreate(BaseModel):
     email: EmailStr
@@ -28,6 +27,7 @@ class UserResponse(BaseModel):
 @router.post("/register")
 async def register(user_data: UserCreate, response: Response):
     try:
+        print(f"Attempting to register user with email: {user_data.email}")
         # Create user
         user = user_manager.create_user(
             email=user_data.email,
@@ -68,6 +68,7 @@ async def register(user_data: UserCreate, response: Response):
             )
         }
     except Exception as e:
+        print(f"Registration error: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.post("/login")

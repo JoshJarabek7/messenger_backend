@@ -6,7 +6,7 @@ from uuid import uuid4
 from typing import Optional, Dict, Any
 import mimetypes
 
-BUCKET_NAME = getenv("AWS_BUCKET_NAME")
+BUCKET_NAME = getenv("AWS_S3_BUCKET_NAME")
 AWS_REGION = getenv("AWS_REGION")
 AWS_ACCESS_KEY_ID = getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = getenv("AWS_SECRET_ACCESS_KEY")
@@ -19,6 +19,29 @@ class Storage:
             aws_access_key_id=AWS_ACCESS_KEY_ID,
             aws_secret_access_key=AWS_SECRET_ACCESS_KEY
         )
+        self.configure_cors()
+
+    def configure_cors(self):
+        """Configure CORS for the S3 bucket"""
+        cors_configuration = {
+            'CORSRules': [
+                {
+                    'AllowedHeaders': ['*'],
+                    'AllowedMethods': ['GET', 'PUT', 'POST', 'DELETE'],
+                    'AllowedOrigins': ['*'],
+                    'ExposeHeaders': ['ETag']
+                }
+            ]
+        }
+        try:
+            self.s3_client.put_bucket_cors(
+                Bucket=BUCKET_NAME,
+                CORSConfiguration=cors_configuration
+            )
+            logging.info("Successfully configured CORS for S3 bucket")
+        except ClientError as e:
+            logging.error(f"Error configuring CORS for S3 bucket: {e}")
+            # Don't raise the error as this is not critical for operation
 
     def get_upload_details(self, filename: str, content_type: Optional[str] = None) -> Dict[str, Any]:
         """

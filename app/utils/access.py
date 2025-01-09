@@ -4,8 +4,8 @@ from fastapi import HTTPException
 from sqlalchemy import or_, and_
 
 from app.models import (
- Conversation, ChannelMember, 
-    ChannelType, WorkspaceMember
+ Conversation, 
+    ChannelType, WorkspaceMember, ConversationMember
 )
 
 def verify_conversation_access(
@@ -46,9 +46,9 @@ def verify_conversation_access(
     
     # For private channels, check channel membership
     member = session.exec(
-        select(ChannelMember).where(
-            ChannelMember.channel_id == conversation_id,
-            ChannelMember.user_id == user_id
+        select(ConversationMember).where(
+            ConversationMember.conversation_id == conversation_id,
+            ConversationMember.user_id == user_id
         )
     ).first()
     
@@ -85,8 +85,8 @@ def get_accessible_conversations(
             and_(
                 Conversation.conversation_type == ChannelType.PRIVATE,
                 Conversation.id.in_(
-                    select(ChannelMember.channel_id)
-                    .where(ChannelMember.user_id == user_id)
+                    select(ConversationMember.conversation_id)
+                    .where(ConversationMember.user_id == user_id)
                 )
             )
         )
@@ -95,7 +95,8 @@ def get_accessible_conversations(
     if workspace_id:
         query = query.where(Conversation.workspace_id == workspace_id)
     
-    return [conv_id for conv_id, in session.exec(query).all()]
+    # Return the UUIDs directly without trying to unpack them
+    return session.exec(query).all()
 
 def verify_workspace_access(
     session: Session,

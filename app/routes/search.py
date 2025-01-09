@@ -8,7 +8,7 @@ from enum import Enum
 from app.utils.db import get_session
 from app.models import (
     User, Workspace, WorkspaceMember, Conversation, 
-    Message, FileAttachment, ChannelMember, ChannelType
+    Message, FileAttachment, ChannelType, ConversationMember
 )
 from app.utils.auth import get_current_user
 
@@ -119,8 +119,8 @@ async def search_global(
                         and_(
                             Conversation.conversation_type == ChannelType.PRIVATE,
                             Conversation.id.in_(
-                                select(ChannelMember.channel_id)
-                                .where(ChannelMember.user_id == current_user.id)
+                                select(ConversationMember.conversation_id)
+                                .where(ConversationMember.user_id == current_user.id)
                             )
                         )
                     )
@@ -180,8 +180,8 @@ async def search_global(
                         and_(
                             Conversation.conversation_type == ChannelType.PRIVATE,
                             Conversation.id.in_(
-                                select(ChannelMember.channel_id)
-                                .where(ChannelMember.user_id == current_user.id)
+                                select(ConversationMember.conversation_id)
+                                .where(ConversationMember.user_id == current_user.id)
                             )
                         )
                     )

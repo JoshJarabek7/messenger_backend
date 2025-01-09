@@ -35,9 +35,10 @@ class MessageInfo(BaseModel):
     id: str
     content: str
     conversation_id: str
-    parent_id: Optional[str] = None
+    parent_id: str | None
     created_at: datetime
     updated_at: datetime
+    reply_count: int = 0
     user: UserInfo
     attachments: List["FileInfo"] = []
     reactions: List["ReactionInfo"] = []

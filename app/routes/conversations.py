@@ -50,7 +50,12 @@ async def create_conversation(
             ).first()
             
             if existing_conversation:
-                return ConversationInfo.model_validate(existing_conversation.model_dump())
+                # Convert UUIDs to strings in the model dump
+                data = existing_conversation.model_dump()
+                data["id"] = str(data["id"])
+                if data.get("workspace_id"):
+                    data["workspace_id"] = str(data["workspace_id"])
+                return ConversationInfo.model_validate(data)
             
             # Create new DM conversation
             conversation = Conversation(
@@ -79,7 +84,12 @@ async def create_conversation(
         session.commit()
         session.refresh(conversation)
         
-        return ConversationInfo.model_validate(conversation.model_dump())
+        # Convert UUIDs to strings in the model dump
+        data = conversation.model_dump()
+        data["id"] = str(data["id"])
+        if data.get("workspace_id"):
+            data["workspace_id"] = str(data["workspace_id"])
+        return ConversationInfo.model_validate(data)
 
 @router.get("/recent", response_model=List[ConversationInfo])
 async def get_recent_conversations(

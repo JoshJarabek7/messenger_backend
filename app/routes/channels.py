@@ -4,19 +4,48 @@ from sqlalchemy import Engine
 from typing import List
 from uuid import UUID
 from pydantic import BaseModel
+from datetime import datetime, UTC
 
 from app.utils.db import get_db
-from app.models import User, ChannelMember
+from app.models import Conversation, User, ConversationMember, ChannelType
 from app.utils.auth import get_current_user
 from app.websocket import manager
-from app.schemas import ChannelMemberInfo
-from app.utils.access import verify_conversation_access
+from app.schemas import ConversationInfo, ChannelMemberInfo
+from app.utils.access import verify_workspace_access
 
 router = APIRouter(prefix="/api/channels", tags=["channels"])
 
 class ChannelMemberCreate(BaseModel):
     user_id: UUID
     is_admin: bool = False
+
+class ChannelCreate(BaseModel):
+    name: str
+    description: str | None = None
+
+def verify_conversation_access(session: Session, conversation_id: UUID, user_id: UUID, require_admin: bool = False) -> Conversation:
+    """Verify user has access to a conversation and optionally check if they're an admin."""
+    conversation = session.exec(
+        select(Conversation).where(Conversation.id == conversation_id)
+    ).first()
+    
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    
+    member = session.exec(
+        select(ConversationMember).where(
+            ConversationMember.conversation_id == conversation_id,
+            ConversationMember.user_id == user_id
+        )
+    ).first()
+    
+    if not member:
+        raise HTTPException(status_code=403, detail="Not a member of this conversation")
+    
+    if require_admin and not member.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    return conversation
 
 @router.post("/{channel_id}/members")
 async def add_channel_member(
@@ -32,9 +61,9 @@ async def add_channel_member(
         
         # Check if user is already a member
         existing_member = session.exec(
-            select(ChannelMember).where(
-                ChannelMember.channel_id == channel_id,
-                ChannelMember.user_id == member.user_id
+            select(ConversationMember).where(
+                ConversationMember.conversation_id == channel_id,
+                ConversationMember.user_id == member.user_id
             )
         ).first()
         
@@ -42,8 +71,8 @@ async def add_channel_member(
             raise HTTPException(status_code=400, detail="User is already a member of this channel")
         
         # Add new member
-        new_member = ChannelMember(
-            channel_id=channel_id,
+        new_member = ConversationMember(
+            conversation_id=channel_id,
             user_id=member.user_id,
             is_admin=member.is_admin
         )
@@ -70,9 +99,9 @@ async def remove_channel_member(
         
         # Remove member
         member = session.exec(
-            select(ChannelMember).where(
-                ChannelMember.channel_id == channel_id,
-                ChannelMember.user_id == user_id
+            select(ConversationMember).where(
+                ConversationMember.conversation_id == channel_id,
+                ConversationMember.user_id == user_id
             )
         ).first()
         
@@ -98,9 +127,9 @@ async def get_channel_members(
         
         # Get all members with user info
         members = session.exec(
-            select(ChannelMember, User)
-            .join(User, ChannelMember.user_id == User.id)
-            .where(ChannelMember.channel_id == channel_id)
+            select(ConversationMember, User)
+            .join(User, ConversationMember.user_id == User.id)
+            .where(ConversationMember.conversation_id == channel_id)
         ).all()
         
         # Convert to response model
@@ -118,3 +147,40 @@ async def get_channel_members(
             )
             for member, user in members
         ] 
+
+@router.post("", response_model=ConversationInfo)
+async def create_channel(
+    workspace_id: UUID,
+    channel: ChannelCreate,
+    current_user: User = Depends(get_current_user),
+    engine: Engine = Depends(get_db)
+):
+    """Create a new channel in a workspace."""
+    with Session(engine) as session:
+        # Verify workspace access
+        verify_workspace_access(session, workspace_id, current_user.id)
+        
+        # Create the channel
+        new_channel = Conversation(
+            name=channel.name,
+            description=channel.description,
+            workspace_id=workspace_id,
+            conversation_type=ChannelType.PUBLIC,
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC)
+        )
+        session.add(new_channel)
+        session.commit()
+        session.refresh(new_channel)
+        
+        # Add creator to the channel
+        channel_member = ConversationMember(
+            conversation_id=new_channel.id,
+            user_id=current_user.id,
+            is_admin=True,
+            joined_at=datetime.now(UTC)
+        )
+        session.add(channel_member)
+        session.commit()
+        
+        return ConversationInfo.model_validate(new_channel.model_dump()) 

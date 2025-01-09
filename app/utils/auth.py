@@ -5,8 +5,9 @@ from jose import JWTError, jwt
 from pydantic import BaseModel
 from uuid import UUID
 from app.models import User
-from app.websocket import UserManager
+from app.managers.user_manager import user_manager
 from os import getenv
+
 # JWT Configuration
 SECRET_KEY = getenv("JWT_SECRET_KEY")
 if not SECRET_KEY:
@@ -32,9 +33,6 @@ class TokenData(BaseModel):
     exp: datetime
 
 class AuthUtils:
-    def __init__(self):
-        self.user_manager = UserManager()
-
     def create_access_token(self, user_id: UUID) -> str:
         """Create a new access token."""
         expires_delta = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -117,7 +115,7 @@ class AuthUtils:
         """Get the current user from a token stored in cookies."""
         token_data = self.verify_token(access_token)
         print(token_data)
-        user = self.user_manager.get_user_by_id(token_data.user_id)
+        user = user_manager.get_user_by_id(token_data.user_id)
         if user is None:
             raise HTTPException(
                 status_code=401,
@@ -145,7 +143,7 @@ async def get_current_user(request: Request) -> User:
         token_data = auth_utils.verify_token(access_token, "access")
         print("Token data after verification:", token_data)
         
-        user = auth_utils.user_manager.get_user_by_id(token_data.user_id)
+        user = user_manager.get_user_by_id(token_data.user_id)
         if user is None:
             raise HTTPException(
                 status_code=401,

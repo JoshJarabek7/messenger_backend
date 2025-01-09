@@ -34,6 +34,10 @@ async def startup_event():
 origins = [
     "http://localhost:5173",  # Dev frontend
     "http://localhost:4173",  # Preview frontend
+    "http://localhost:3000",  # Alternative dev port
+    "http://127.0.0.1:5173",  # Local IP
+    "http://127.0.0.1:4173",  # Local IP preview
+    "http://127.0.0.1:3000",  # Local IP alternative
     *os.getenv("CORS_ORIGINS", "").split(",")  # Additional origins from env
 ]
 
@@ -43,6 +47,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=3600,  # Cache preflight requests for 1 hour
 )
 
 # Global exception handler
