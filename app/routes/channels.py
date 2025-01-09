@@ -1,17 +1,18 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlmodel import Session, select
-from sqlalchemy import Engine
+from datetime import UTC, datetime
 from typing import List
 from uuid import UUID
-from pydantic import BaseModel
-from datetime import datetime, UTC
 
-from app.utils.db import get_db
-from app.models import Conversation, User, ConversationMember, ChannelType
-from app.utils.auth import get_current_user
-from app.websocket import manager
-from app.schemas import ConversationInfo, ChannelMemberInfo
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from sqlalchemy import Engine
+from sqlmodel import Session, select
+
+from app.models import ChannelType, Conversation, ConversationMember, User
+from app.schemas import ChannelMemberInfo, ConversationInfo
 from app.utils.access import verify_workspace_access
+from app.utils.auth import get_current_user
+from app.utils.db import get_db
+from app.websocket import manager
 
 router = APIRouter(prefix="/api/channels", tags=["channels"])
 
@@ -63,7 +64,7 @@ async def add_channel_member(
     """Add a member to a channel."""
     with Session(engine) as session:
         # Verify access and get channel
-        conversation = verify_conversation_access(
+        verify_conversation_access(
             session, channel_id, current_user.id, require_admin=True
         )
 
@@ -104,7 +105,7 @@ async def remove_channel_member(
     with Session(engine) as session:
         # Allow self-removal or require admin access
         require_admin = user_id != current_user.id
-        conversation = verify_conversation_access(
+        verify_conversation_access(
             session, channel_id, current_user.id, require_admin=require_admin
         )
 
@@ -135,7 +136,7 @@ async def get_channel_members(
     """Get all members of a channel."""
     with Session(engine) as session:
         # Verify access to channel
-        conversation = verify_conversation_access(session, channel_id, current_user.id)
+        verify_conversation_access(session, channel_id, current_user.id)
 
         # Get all members with user info
         members = session.exec(
