@@ -1,10 +1,12 @@
 from sqlmodel import Session, SQLModel
+
 from app.utils.db import get_db
+
 
 def cleanup_database():
     """Delete all data from all tables."""
     engine = get_db()
-    
+
     with Session(engine) as session:
         # Use CASCADE to handle foreign key constraints
         session.execute("""
@@ -19,10 +21,11 @@ def cleanup_database():
             DROP TABLE IF EXISTS user CASCADE;
         """)
         session.commit()
-        
+
         # Recreate tables
         SQLModel.metadata.create_all(engine)
         print("Database cleanup complete!")
 
+
 if __name__ == "__main__":
-    cleanup_database() 
+    cleanup_database()

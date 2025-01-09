@@ -1,14 +1,18 @@
-from typing import Optional, List
-from sqlmodel import Field, SQLModel, Relationship
-from uuid import UUID, uuid4
 from datetime import datetime
 from enum import Enum
+from typing import List, Optional
+from uuid import UUID, uuid4
+
+from sqlmodel import Field, Relationship, SQLModel
+
 from app.utils.time import get_current_time
+
 
 class ChannelType(str, Enum):
     PUBLIC = "PUBLIC"
     PRIVATE = "PRIVATE"
     DIRECT = "DIRECT"
+
 
 class FileType(str, Enum):
     IMAGE = "image"
@@ -35,7 +39,7 @@ class FileType(str, Enum):
             "application/vnd.ms-powerpoint": cls.PRESENTATION,
             "application/vnd.openxmlformats-officedocument.presentationml.presentation": cls.PRESENTATION,
         }
-        
+
         for mime_prefix, file_type in mime_map.items():
             if mime_type.startswith(mime_prefix):
                 return file_type
@@ -67,17 +71,20 @@ class FileType(str, Enum):
         }
         return ext_map.get(ext, cls.OTHER)
 
+
 class WorkspaceMember(SQLModel, table=True):
     workspace_id: UUID = Field(foreign_key="workspace.id", primary_key=True)
     user_id: UUID = Field(foreign_key="user.id", primary_key=True)
     role: str = Field(default="member")
     joined_at: datetime = Field(default_factory=get_current_time)
 
+
 class ConversationMember(SQLModel, table=True):
     conversation_id: UUID = Field(foreign_key="conversation.id", primary_key=True)
     user_id: UUID = Field(foreign_key="user.id", primary_key=True)
     joined_at: datetime = Field(default_factory=get_current_time)
     is_admin: bool = Field(default=False)
+
 
 class Workspace(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
@@ -89,7 +96,10 @@ class Workspace(SQLModel, table=True):
 
     # Relationships
     conversations: List["Conversation"] = Relationship(back_populates="workspace")
-    members: List["User"] = Relationship(back_populates="workspaces", link_model=WorkspaceMember)
+    members: List["User"] = Relationship(
+        back_populates="workspaces", link_model=WorkspaceMember
+    )
+
 
 class User(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
@@ -106,14 +116,21 @@ class User(SQLModel, table=True):
 
     # Relationships
     messages: List["Message"] = Relationship(back_populates="user")
-    workspaces: List[Workspace] = Relationship(back_populates="members", link_model=WorkspaceMember)
-    conversations: List["Conversation"] = Relationship(back_populates="members", link_model=ConversationMember)
+    workspaces: List[Workspace] = Relationship(
+        back_populates="members", link_model=WorkspaceMember
+    )
+    conversations: List["Conversation"] = Relationship(
+        back_populates="members", link_model=ConversationMember
+    )
     reactions: List["Reaction"] = Relationship(back_populates="user")
     sessions: List["UserSession"] = Relationship(back_populates="user")
 
+
 class Message(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
-    content: Optional[str] = None  # Making content optional since a message might just have attachments
+    content: Optional[str] = (
+        None  # Making content optional since a message might just have attachments
+    )
     user_id: UUID = Field(foreign_key="user.id")
     conversation_id: Optional[UUID] = Field(default=None, foreign_key="conversation.id")
     parent_id: Optional[UUID] = Field(default=None, foreign_key="message.id")
@@ -127,6 +144,7 @@ class Message(SQLModel, table=True):
     reactions: List["Reaction"] = Relationship(back_populates="message")
     replies: List["Message"] = Relationship()  # For thread replies
 
+
 class Reaction(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     emoji: str
@@ -138,6 +156,7 @@ class Reaction(SQLModel, table=True):
     message: Message = Relationship(back_populates="reactions")
     user: "User" = Relationship(back_populates="reactions")
 
+
 class FileAttachment(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     original_filename: str  # Original filename from user
@@ -146,28 +165,38 @@ class FileAttachment(SQLModel, table=True):
     mime_type: str  # Store the actual MIME type for precise handling
     file_size: int
     uploaded_at: datetime = Field(default_factory=get_current_time)
-    upload_completed: bool = Field(default=False)  # Track if the file was successfully uploaded
-    message_id: Optional[UUID] = Field(default=None, foreign_key="message.id")  # Make message_id optional
+    upload_completed: bool = Field(
+        default=False
+    )  # Track if the file was successfully uploaded
+    message_id: Optional[UUID] = Field(
+        default=None, foreign_key="message.id"
+    )  # Make message_id optional
     user_id: UUID = Field(foreign_key="user.id")
-    
+
     # Relationships
     message: Optional[Message] = Relationship(back_populates="attachments")
+
 
 class UserSession(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     user_id: UUID = Field(foreign_key="user.id")
-    session_id: str = Field(index=True)  # Store the WebSocket connection ID or session token
+    session_id: str = Field(
+        index=True
+    )  # Store the WebSocket connection ID or session token
     connected_at: datetime = Field(default_factory=get_current_time)
     last_ping: datetime = Field(default_factory=get_current_time)
 
     # Relationship
     user: "User" = Relationship(back_populates="sessions")
 
+
 class Conversation(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     name: str | None = None
     description: str | None = None
-    conversation_type: ChannelType = Field(default=ChannelType.DIRECT)  # Reusing ChannelType enum
+    conversation_type: ChannelType = Field(
+        default=ChannelType.DIRECT
+    )  # Reusing ChannelType enum
     participant_1_id: Optional[UUID] = Field(default=None, foreign_key="user.id")
     participant_2_id: Optional[UUID] = Field(default=None, foreign_key="user.id")
     workspace_id: Optional[UUID] = Field(default=None, foreign_key="workspace.id")
@@ -177,4 +206,6 @@ class Conversation(SQLModel, table=True):
     # Relationships
     messages: List[Message] = Relationship(back_populates="conversation")
     workspace: Optional[Workspace] = Relationship(back_populates="conversations")
-    members: List["User"] = Relationship(back_populates="conversations", link_model=ConversationMember)
+    members: List["User"] = Relationship(
+        back_populates="conversations", link_model=ConversationMember
+    )

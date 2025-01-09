@@ -1,24 +1,36 @@
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from app.routes import auth, websocket, workspaces, messages, search, channels, users, files, conversations
-from app.utils.db import create_db_and_tables
-from app.utils.errors import APIError
 import logging
 import os
 
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+from app.routes import (
+    auth,
+    channels,
+    conversations,
+    files,
+    messages,
+    search,
+    users,
+    websocket,
+    workspaces,
+)
+from app.utils.db import create_db_and_tables
+from app.utils.errors import APIError
+
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Slack Clone API",
     description="A modern chat application API inspired by Slack",
-    version="1.0.0"
+    version="1.0.0",
 )
+
 
 # Create database tables at startup
 @app.on_event("startup")
@@ -30,6 +42,7 @@ async def startup_event():
         logger.error(f"Error creating database tables: {e}")
         raise
 
+
 # CORS middleware configuration
 origins = [
     "http://localhost:5173",  # Dev frontend
@@ -38,7 +51,7 @@ origins = [
     "http://127.0.0.1:5173",  # Local IP
     "http://127.0.0.1:4173",  # Local IP preview
     "http://127.0.0.1:3000",  # Local IP alternative
-    *os.getenv("CORS_ORIGINS", "").split(",")  # Additional origins from env
+    *os.getenv("CORS_ORIGINS", "").split(","),  # Additional origins from env
 ]
 
 app.add_middleware(
@@ -51,40 +64,36 @@ app.add_middleware(
     max_age=3600,  # Cache preflight requests for 1 hour
 )
 
+
 # Global exception handler
 @app.exception_handler(APIError)
 async def api_error_handler(request: Request, exc: APIError):
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={"detail": exc.detail}
-    )
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
     logger.error(f"Unhandled exception: {exc}", exc_info=True)
-    return JSONResponse(
-        status_code=500,
-        content={"detail": "Internal server error"}
-    )
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+
 
 # Health check endpoint
 @app.get("/health")
 async def health_check():
-    return {
-        "status": "healthy",
-        "version": app.version
-    }
+    return {"status": "healthy", "version": app.version}
+
 
 # Include routers
-app.include_router(auth)
-app.include_router(websocket)
-app.include_router(workspaces)
-app.include_router(messages)
-app.include_router(search)
-app.include_router(channels)
-app.include_router(users)
-app.include_router(files)
-app.include_router(conversations)
+app.include_router(auth.router)
+app.include_router(websocket.router)
+app.include_router(workspaces.router)
+app.include_router(messages.router)
+app.include_router(search.router)
+app.include_router(channels.router)
+app.include_router(users.router)
+app.include_router(files.router)
+app.include_router(conversations.router)
+
 
 @app.get("/")
 async def root():
@@ -92,5 +101,5 @@ async def root():
         "app": "Slack Clone API",
         "version": app.version,
         "docs_url": "/docs",
-        "redoc_url": "/redoc"
+        "redoc_url": "/redoc",
     }
