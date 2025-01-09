@@ -2,6 +2,7 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel
 from sqlmodel import Session, or_, select
 
 from app.models import User, WorkspaceMember
@@ -9,6 +10,13 @@ from app.utils.auth import get_current_user
 from app.utils.db import get_session
 
 router = APIRouter(prefix="/api/users", tags=["users"])
+
+
+class UserUpdate(BaseModel):
+    username: Optional[str] = None
+    display_name: Optional[str] = None
+    email: Optional[str] = None
+    avatar_url: Optional[str] = None
 
 
 @router.get("/search")
@@ -45,3 +53,56 @@ async def search_users(
         }
         for user in users
     ]
+
+
+@router.get("/username-exists/{username}")
+async def check_username_exists(
+    username: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    """Check if a username is already taken."""
+    user = session.exec(
+        select(User).where(User.username == username, User.id != current_user.id)
+    ).first()
+    return {"exists": user is not None}
+
+
+@router.put("/me")
+async def update_user_profile(
+    user_update: UserUpdate,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    """Update the current user's profile."""
+    # Check if username is taken
+    if user_update.username and user_update.username != current_user.username:
+        existing_user = session.exec(
+            select(User).where(
+                User.username == user_update.username, User.id != current_user.id
+            )
+        ).first()
+        if existing_user:
+            raise HTTPException(status_code=400, detail="Username already taken")
+
+    # Update user fields
+    if user_update.username is not None:
+        current_user.username = user_update.username
+    if user_update.display_name is not None:
+        current_user.display_name = user_update.display_name
+    if user_update.email is not None:
+        current_user.email = user_update.email
+    if user_update.avatar_url is not None:
+        current_user.avatar_url = user_update.avatar_url
+
+    session.add(current_user)
+    session.commit()
+    session.refresh(current_user)
+
+    return {
+        "id": str(current_user.id),
+        "username": current_user.username,
+        "display_name": current_user.display_name,
+        "email": current_user.email,
+        "avatar_url": current_user.avatar_url,
+    }
