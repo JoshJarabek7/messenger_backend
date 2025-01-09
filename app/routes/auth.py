@@ -164,7 +164,9 @@ async def verify_token(request: Request, user: User = Depends(get_current_user))
     print("Access token from cookie:", request.cookies.get("access_token"))
     print(f"User data: {user.model_dump()}")
     storage = Storage()
-    avatar_url = storage.create_presigned_url(user.avatar_url)
+    avatar_url = (
+        storage.create_presigned_url(user.avatar_url) if user.avatar_url else None
+    )
     return UserResponse(
         id=str(user.id),
         email=user.email,

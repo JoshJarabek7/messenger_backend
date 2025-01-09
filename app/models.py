@@ -89,6 +89,7 @@ class ConversationMember(SQLModel, table=True):
 class Workspace(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     name: str = Field(index=True)
+    description: Optional[str] = None
     slug: str = Field(unique=True, index=True)
     icon_url: Optional[str] = None
     created_at: datetime = Field(default_factory=get_current_time)

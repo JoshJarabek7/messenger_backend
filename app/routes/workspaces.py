@@ -1,6 +1,6 @@
 import re
 from datetime import UTC, datetime
-from typing import List
+from typing import List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -30,6 +30,16 @@ router = APIRouter(prefix="/api/workspaces", tags=["workspaces"])
 class WorkspaceCreate(BaseModel):
     name: str
     description: str | None = None
+
+
+class WorkspaceUpdate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    icon_url: Optional[str] = None
+
+
+class MemberUpdate(BaseModel):
+    role: str
 
 
 def generate_unique_slug(name: str, engine: Engine = Depends(get_db)) -> str:
@@ -280,7 +290,7 @@ async def get_workspace(
         return WorkspaceInfo.model_validate(workspace_dict)
 
 
-@router.get("/{workspace_id}/members", response_model=List[UserInfo])
+@router.get("/{workspace_id}/members")
 async def get_workspace_members(
     workspace_id: UUID,
     user: User = Depends(get_current_user),
@@ -289,9 +299,43 @@ async def get_workspace_members(
     with Session(engine) as session:
         verify_workspace_access(session, workspace_id, user.id)
         members = session.exec(
-            select(WorkspaceMember).where(WorkspaceMember.workspace_id == workspace_id)
+            select(User, WorkspaceMember)
+            .join(WorkspaceMember, User.id == WorkspaceMember.user_id)
+            .where(WorkspaceMember.workspace_id == workspace_id)
         ).all()
-        return [UserInfo.model_validate(member.model_dump()) for member in members]
+        storage = Storage()
+
+        # Organize members by role
+        owner_ids = []
+        admin_ids = []
+        member_ids = []
+        users = {}
+
+        for member in members:
+            user_data = {
+                "id": str(member[0].id),
+                "username": member[0].username,
+                "display_name": member[0].display_name,
+                "email": member[0].email,
+                "avatar_url": storage.create_presigned_url(member[0].avatar_url)
+                if member[0].avatar_url
+                else None,
+            }
+            users[str(member[0].id)] = user_data
+
+            if member[1].role == "owner":
+                owner_ids.append(str(member[0].id))
+            elif member[1].role == "admin":
+                admin_ids.append(str(member[0].id))
+            else:
+                member_ids.append(str(member[0].id))
+
+        return {
+            "users": users,
+            "owner_ids": owner_ids,
+            "admin_ids": admin_ids,
+            "member_ids": member_ids,
+        }
 
 
 @router.get("/{workspace_id}/members/{user_id}")
@@ -397,3 +441,115 @@ async def get_workspace_files(
             }
             for file in files
         ]
+
+
+@router.put("/{workspace_id}", response_model=WorkspaceInfo)
+async def update_workspace(
+    workspace_id: UUID,
+    workspace_update: WorkspaceUpdate,
+    current_user: User = Depends(get_current_user),
+    engine: Engine = Depends(get_db),
+):
+    """Update a workspace's settings."""
+    with Session(engine) as session:
+        # Verify the user is an admin or owner
+        member = session.exec(
+            select(WorkspaceMember).where(
+                WorkspaceMember.workspace_id == workspace_id,
+                WorkspaceMember.user_id == current_user.id,
+            )
+        ).first()
+
+        if not member or member.role not in ["admin", "owner"]:
+            raise HTTPException(
+                status_code=403,
+                detail="You must be an admin or owner to update workspace settings",
+            )
+
+        # Check if the new name is already taken (if name is being changed)
+        workspace = session.exec(
+            select(Workspace).where(Workspace.id == workspace_id)
+        ).first()
+        if not workspace:
+            raise HTTPException(status_code=404, detail="Workspace not found")
+
+        if workspace.name != workspace_update.name:
+            existing_workspace = session.exec(
+                select(Workspace).where(
+                    Workspace.name == workspace_update.name,
+                    Workspace.id != workspace_id,
+                )
+            ).first()
+            if existing_workspace:
+                raise HTTPException(
+                    status_code=400, detail="A workspace with this name already exists"
+                )
+
+        # Update the workspace
+        for field, value in workspace_update.model_dump(exclude_unset=True).items():
+            setattr(workspace, field, value)
+
+        session.add(workspace)
+        session.commit()
+        session.refresh(workspace)
+
+        # Convert the model to a dict and convert UUIDs to strings
+        workspace_dict = workspace.model_dump()
+        workspace_dict["id"] = str(workspace_dict["id"])
+        workspace_dict["created_by_id"] = str(workspace_dict["created_by_id"])
+
+        return WorkspaceInfo.model_validate(workspace_dict)
+
+
+@router.patch("/{workspace_id}/members/{user_id}")
+async def update_workspace_member(
+    workspace_id: UUID,
+    user_id: UUID,
+    member_update: MemberUpdate,
+    current_user: User = Depends(get_current_user),
+    engine: Engine = Depends(get_db),
+):
+    """Update a workspace member's role."""
+    with Session(engine) as session:
+        # Verify the current user is an admin or owner
+        current_member = session.exec(
+            select(WorkspaceMember).where(
+                WorkspaceMember.workspace_id == workspace_id,
+                WorkspaceMember.user_id == current_user.id,
+            )
+        ).first()
+
+        if not current_member or current_member.role not in ["admin", "owner"]:
+            raise HTTPException(
+                status_code=403,
+                detail="You must be an admin or owner to update member roles",
+            )
+
+        # Get the target member
+        member = session.exec(
+            select(WorkspaceMember).where(
+                WorkspaceMember.workspace_id == workspace_id,
+                WorkspaceMember.user_id == user_id,
+            )
+        ).first()
+
+        if not member:
+            raise HTTPException(status_code=404, detail="Member not found")
+
+        # Prevent owners from being demoted
+        if member.role == "owner":
+            raise HTTPException(
+                status_code=403,
+                detail="Workspace owner's role cannot be changed",
+            )
+
+        # Update the member's role
+        member.role = member_update.role
+        session.add(member)
+        session.commit()
+        session.refresh(member)
+
+        return {
+            "role": member.role,
+            "joined_at": member.joined_at,
+        }

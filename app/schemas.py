@@ -118,4 +118,12 @@ class AuthResponse(BaseModel):
     tokens: Optional[TokenResponse] = None
 
 
+class WorkspaceMemberInfo(BaseModel):
+    """Workspace member information"""
+
+    user_id: str
+    role: str
+    joined_at: datetime
+
+
 MessageInfo.model_rebuild()  # Rebuild to handle circular references
