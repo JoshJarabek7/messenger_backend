@@ -112,7 +112,9 @@ async def get_messages(
                     "email": message.user.email,
                     "username": message.user.username,
                     "display_name": message.user.display_name,
-                    "avatar_url": message.user.avatar_url,
+                    "avatar_url": storage.create_presigned_url(message.user.avatar_url)
+                    if message.user.avatar_url
+                    else None,
                     "is_online": message.user.is_online,
                 },
                 "attachments": attachments,
@@ -125,7 +127,11 @@ async def get_messages(
                             "email": r.user.email,
                             "username": r.user.username,
                             "display_name": r.user.display_name,
-                            "avatar_url": r.user.avatar_url,
+                            "avatar_url": storage.create_presigned_url(
+                                r.user.avatar_url
+                            )
+                            if r.user.avatar_url
+                            else None,
                             "is_online": r.user.is_online,
                         },
                     }
@@ -161,6 +167,7 @@ async def create_message(
 
         # Link file attachments if provided
         if message.file_ids:
+            print(f"Message file ids: {message.file_ids}")
             # Get file attachments and verify they belong to the current user
             file_attachments = session.exec(
                 select(FileAttachment).where(
@@ -176,6 +183,8 @@ async def create_message(
                 attachment.message_id = db_message.id
                 session.add(attachment)
 
+            print(f"File attachments: {file_attachments}")
+
         # Update conversation timestamp
         conversation.updated_at = datetime.now()
         session.add(conversation)
@@ -185,6 +194,7 @@ async def create_message(
         # Get download URLs for attachments
         attachments = []
         for attachment in db_message.attachments:
+            print(f"Attachment: {attachment.model_dump()}")
             download_url = storage.create_presigned_url(attachment.s3_key)
             attachments.append(
                 {
@@ -211,7 +221,9 @@ async def create_message(
                 "email": current_user.email,
                 "username": current_user.username,
                 "display_name": current_user.display_name,
-                "avatar_url": current_user.avatar_url,
+                "avatar_url": storage.create_presigned_url(current_user.avatar_url)
+                if current_user.avatar_url
+                else None,
                 "is_online": True,  # Since they're actively sending a message
             },
             "attachments": attachments,
@@ -280,10 +292,23 @@ async def add_reaction(
                 "email": message.user.email,
                 "username": message.user.username,
                 "display_name": message.user.display_name,
-                "avatar_url": message.user.avatar_url,
+                "avatar_url": storage.create_presigned_url(message.user.avatar_url)
+                if message.user.avatar_url
+                else None,
                 "is_online": message.user.is_online,
             },
-            "attachments": [],
+            "attachments": [
+                {
+                    "id": str(attachment.id),
+                    "original_filename": attachment.original_filename,
+                    "file_type": attachment.file_type,
+                    "mime_type": attachment.mime_type,
+                    "file_size": attachment.file_size,
+                    "uploaded_at": attachment.uploaded_at,
+                    "download_url": storage.create_presigned_url(attachment.s3_key),
+                }
+                for attachment in message.attachments
+            ],
             "reactions": [
                 {
                     "id": str(r.id),
@@ -293,7 +318,9 @@ async def add_reaction(
                         "email": r.user.email,
                         "username": r.user.username,
                         "display_name": r.user.display_name,
-                        "avatar_url": r.user.avatar_url,
+                        "avatar_url": storage.create_presigned_url(r.user.avatar_url)
+                        if r.user.avatar_url
+                        else None,
                         "is_online": r.user.is_online,
                     },
                 }
@@ -364,10 +391,23 @@ async def remove_reaction(
                 "email": message.user.email,
                 "username": message.user.username,
                 "display_name": message.user.display_name,
-                "avatar_url": message.user.avatar_url,
+                "avatar_url": storage.create_presigned_url(message.user.avatar_url)
+                if message.user.avatar_url
+                else None,
                 "is_online": message.user.is_online,
             },
-            "attachments": [],
+            "attachments": [
+                {
+                    "id": str(attachment.id),
+                    "original_filename": attachment.original_filename,
+                    "file_type": attachment.file_type,
+                    "mime_type": attachment.mime_type,
+                    "file_size": attachment.file_size,
+                    "uploaded_at": attachment.uploaded_at,
+                    "download_url": storage.create_presigned_url(attachment.s3_key),
+                }
+                for attachment in message.attachments
+            ],
             "reactions": [
                 {
                     "id": str(r.id),
@@ -377,7 +417,9 @@ async def remove_reaction(
                         "email": r.user.email,
                         "username": r.user.username,
                         "display_name": r.user.display_name,
-                        "avatar_url": r.user.avatar_url,
+                        "avatar_url": storage.create_presigned_url(r.user.avatar_url)
+                        if r.user.avatar_url
+                        else None,
                         "is_online": r.user.is_online,
                     },
                 }
@@ -477,7 +519,9 @@ async def create_reply(
                 "email": current_user.email,
                 "username": current_user.username,
                 "display_name": current_user.display_name,
-                "avatar_url": current_user.avatar_url,
+                "avatar_url": storage.create_presigned_url(current_user.avatar_url)
+                if current_user.avatar_url
+                else None,
                 "is_online": True,  # Since they're actively sending a message
             },
             "attachments": attachments,
@@ -550,7 +594,9 @@ async def get_thread_messages(
                     "email": message.user.email,
                     "username": message.user.username,
                     "display_name": message.user.display_name,
-                    "avatar_url": message.user.avatar_url,
+                    "avatar_url": storage.create_presigned_url(message.user.avatar_url)
+                    if message.user.avatar_url
+                    else None,
                     "is_online": message.user.is_online,
                 },
                 "attachments": attachments,
@@ -563,7 +609,11 @@ async def get_thread_messages(
                             "email": r.user.email,
                             "username": r.user.username,
                             "display_name": r.user.display_name,
-                            "avatar_url": r.user.avatar_url,
+                            "avatar_url": storage.create_presigned_url(
+                                r.user.avatar_url
+                            )
+                            if r.user.avatar_url
+                            else None,
                             "is_online": r.user.is_online,
                         },
                     }

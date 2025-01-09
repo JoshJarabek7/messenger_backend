@@ -100,6 +100,8 @@ async def get_upload_url(
                 user_id=current_user.id,
                 upload_completed=False,
             )
+
+            print(f"File attachment: {file_attachment.model_dump()}")
             session.add(file_attachment)
             session.commit()
             session.refresh(file_attachment)
@@ -236,7 +238,7 @@ async def delete_file(
     current_user: User = Depends(get_current_user),
     engine: Engine = Depends(get_db),
 ):
-    """Delete a file attachment."""
+    """Delete a file attachment and remove it from all associated messages."""
     with Session(engine) as session:
         file_attachment = session.exec(
             select(FileAttachment).where(FileAttachment.id == file_id)
@@ -254,29 +256,32 @@ async def delete_file(
                 status_code=500, detail="Failed to delete file from storage"
             )
 
-        # If attached to a message, notify channel
-        if file_attachment.message_id:
-            message = session.exec(
+        # Find all messages that reference this file
+        messages = (
+            session.exec(
                 select(Message).where(Message.id == file_attachment.message_id)
-            ).first()
+            ).all()
+            if file_attachment.message_id
+            else []
+        )
 
-            if message and message.channel_id:
-                await manager.broadcast_to_channel(
-                    message.channel_id,
-                    WebSocketMessageType.MESSAGE_DELETED,
+        # Notify all relevant conversations about the file deletion
+        for message in messages:
+            if message.conversation_id:
+                await manager.broadcast_to_conversation(
+                    message.conversation_id,
+                    WebSocketMessageType.FILE_DELETED,
                     {
-                        "type": "file_deleted",
-                        "data": {
-                            "file_id": str(file_id),
-                            "message_id": str(message.id),
-                        },
+                        "file_id": str(file_id),
+                        "message_id": str(message.id),
                     },
                 )
 
         # Delete from database
         session.delete(file_attachment)
         session.commit()
-        return {"status": "deleted"}
+
+        return {"status": "deleted", "affected_messages": [str(m.id) for m in messages]}
 
 
 @router.get("/message/{message_id}", response_model=List[FileMetadata])

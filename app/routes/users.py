@@ -1,4 +1,5 @@
 from typing import Optional
+from urllib.parse import urlparse
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -6,6 +7,7 @@ from pydantic import BaseModel
 from sqlmodel import Session, or_, select
 
 from app.models import User, WorkspaceMember
+from app.storage import Storage
 from app.utils.auth import get_current_user
 from app.utils.db import get_session
 
@@ -85,6 +87,16 @@ async def update_user_profile(
         if existing_user:
             raise HTTPException(status_code=400, detail="Username already taken")
 
+    if user_update.avatar_url:
+        print(f"User update avatar url: {user_update.avatar_url}")
+        print("ENSURE THE ABOVE IS THE FILE ID AND NOT THE DOWNLOAD URL")
+        # Extract UUID from S3 URL
+        parsed_url = urlparse(user_update.avatar_url)
+        # Get the path without leading slash and split on query params
+        s3_key = parsed_url.path.lstrip("/").split("?")[0]
+        user_update.avatar_url = s3_key  # Replace URL with just the S3 key
+        print(f"PARSED S3 KEY AND URL: {s3_key}")
+
     # Update user fields
     if user_update.username is not None:
         current_user.username = user_update.username
@@ -99,10 +111,13 @@ async def update_user_profile(
     session.commit()
     session.refresh(current_user)
 
+    storage = Storage()
+    avatar_url = storage.create_presigned_url(current_user.avatar_url)
+
     return {
         "id": str(current_user.id),
         "username": current_user.username,
         "display_name": current_user.display_name,
         "email": current_user.email,
-        "avatar_url": current_user.avatar_url,
+        "avatar_url": avatar_url,
     }

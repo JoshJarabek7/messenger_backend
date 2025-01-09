@@ -40,6 +40,7 @@ class WebSocketMessageType(str, Enum):
     USER_TYPING = "user_typing"
     USER_PRESENCE = "user_presence"
     PING = "ping"
+    FILE_DELETED = "file_deleted"
 
 
 """SESSION MANAGEMENT"""

@@ -5,6 +5,7 @@ from pydantic import BaseModel, EmailStr
 
 from app.managers.user_manager import user_manager
 from app.models import User
+from app.storage import Storage
 from app.utils.auth import auth_utils, get_current_user
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -161,12 +162,15 @@ async def verify_token(request: Request, user: User = Depends(get_current_user))
     """Verify access token and return user data"""
     print("Verify endpoint - Cookies received:", request.cookies)
     print("Access token from cookie:", request.cookies.get("access_token"))
+    print(f"User data: {user.model_dump()}")
+    storage = Storage()
+    avatar_url = storage.create_presigned_url(user.avatar_url)
     return UserResponse(
         id=str(user.id),
         email=user.email,
         username=user.username,
         display_name=user.display_name,
-        avatar_url=user.avatar_url,
+        avatar_url=avatar_url,
     )
 
 
