@@ -64,6 +64,7 @@ class FileInfo(BaseModel):
     mime_type: str
     file_size: int
     uploaded_at: datetime
+    download_url: Optional[str] = None
 
 
 class ReactionInfo(BaseModel):

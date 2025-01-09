@@ -1,23 +1,27 @@
-from fastapi import APIRouter, Depends, Query, HTTPException
-from sqlmodel import Session, select
-from sqlalchemy import Engine
+from datetime import datetime
 from typing import List
 from uuid import UUID
-from datetime import datetime
-from pydantic import BaseModel
 
-from app.utils.db import get_db
-from app.models import Message, User, Reaction
-from app.utils.auth import get_current_user
-from app.websocket import manager, WebSocketMessageType
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
+from sqlalchemy import Engine
+from sqlmodel import Session, select
+
+from app.models import FileAttachment, Message, Reaction, User
 from app.schemas import MessageInfo
+from app.storage import Storage
 from app.utils.access import verify_conversation_access
+from app.utils.auth import get_current_user
+from app.utils.db import get_db
+from app.websocket import WebSocketMessageType, manager
 
 router = APIRouter(prefix="/api/messages", tags=["messages"])
+storage = Storage()
 
 
 class MessageCreate(BaseModel):
     content: str
+    file_ids: list[str] | None = None
 
 
 class ReactionCreate(BaseModel):
@@ -37,9 +41,7 @@ async def get_messages(
     """Get messages from any conversation (channel or DM)."""
     with Session(engine) as session:
         # Verify access to conversation
-        conversation = verify_conversation_access(
-            session, conversation_id, current_user.id
-        )
+        verify_conversation_access(session, conversation_id, current_user.id)
 
         # Build base query
         query = select(Message).where(
@@ -81,6 +83,22 @@ async def get_messages(
             ).all()
             reply_count = len(reply_count_result)
 
+            # Get download URLs for attachments
+            attachments = []
+            for attachment in message.attachments:
+                download_url = storage.create_presigned_url(attachment.s3_key)
+                attachments.append(
+                    {
+                        "id": str(attachment.id),
+                        "original_filename": attachment.original_filename,
+                        "file_type": attachment.file_type,
+                        "mime_type": attachment.mime_type,
+                        "file_size": attachment.file_size,
+                        "uploaded_at": attachment.uploaded_at,
+                        "download_url": download_url,
+                    }
+                )
+
             message_data = {
                 "id": str(message.id),
                 "content": message.content,
@@ -97,17 +115,7 @@ async def get_messages(
                     "avatar_url": message.user.avatar_url,
                     "is_online": message.user.is_online,
                 },
-                "attachments": [
-                    {
-                        "id": str(a.id),
-                        "original_filename": a.original_filename,
-                        "file_type": a.file_type,
-                        "mime_type": a.mime_type,
-                        "file_size": a.file_size,
-                        "uploaded_at": a.uploaded_at,
-                    }
-                    for a in message.attachments
-                ],
+                "attachments": attachments,
                 "reactions": [
                     {
                         "id": str(r.id),
@@ -151,11 +159,44 @@ async def create_message(
         )
         session.add(db_message)
 
+        # Link file attachments if provided
+        if message.file_ids:
+            # Get file attachments and verify they belong to the current user
+            file_attachments = session.exec(
+                select(FileAttachment).where(
+                    FileAttachment.id.in_([UUID(fid) for fid in message.file_ids]),
+                    FileAttachment.user_id == current_user.id,
+                    FileAttachment.message_id.is_(None),  # Only unattached files
+                    FileAttachment.upload_completed.is_(True),  # Only completed uploads
+                )
+            ).all()
+
+            # Update file attachments with message ID
+            for attachment in file_attachments:
+                attachment.message_id = db_message.id
+                session.add(attachment)
+
         # Update conversation timestamp
         conversation.updated_at = datetime.now()
         session.add(conversation)
         session.commit()
         session.refresh(db_message)
+
+        # Get download URLs for attachments
+        attachments = []
+        for attachment in db_message.attachments:
+            download_url = storage.create_presigned_url(attachment.s3_key)
+            attachments.append(
+                {
+                    "id": str(attachment.id),
+                    "original_filename": attachment.original_filename,
+                    "file_type": attachment.file_type,
+                    "mime_type": attachment.mime_type,
+                    "file_size": attachment.file_size,
+                    "uploaded_at": attachment.uploaded_at,
+                    "download_url": download_url,
+                }
+            )
 
         # Convert to response model with proper user data
         message_data = {
@@ -173,7 +214,7 @@ async def create_message(
                 "avatar_url": current_user.avatar_url,
                 "is_online": True,  # Since they're actively sending a message
             },
-            "attachments": [],
+            "attachments": attachments,
             "reactions": [],
         }
 
@@ -363,19 +404,19 @@ async def create_reply(
     current_user: User = Depends(get_current_user),
     engine: Engine = Depends(get_db),
 ):
-    """Create a reply to a message (thread)."""
+    """Create a reply to a message."""
     with Session(engine) as session:
-        # Get parent message and verify access
+        # Get parent message to verify access
         parent_message = session.get(Message, message_id)
         if not parent_message:
-            raise HTTPException(status_code=404, detail="Parent message not found")
+            raise HTTPException(status_code=404, detail="Message not found")
 
         # Verify access to conversation
-        conversation = verify_conversation_access(
+        verify_conversation_access(
             session, parent_message.conversation_id, current_user.id
         )
 
-        # Create reply message
+        # Create reply
         db_message = Message(
             content=message.content,
             conversation_id=parent_message.conversation_id,
@@ -384,18 +425,51 @@ async def create_reply(
         )
         session.add(db_message)
 
+        # Link file attachments if provided
+        if message.file_ids:
+            # Get file attachments and verify they belong to the current user
+            file_attachments = session.exec(
+                select(FileAttachment).where(
+                    FileAttachment.id.in_([UUID(fid) for fid in message.file_ids]),
+                    FileAttachment.user_id == current_user.id,
+                    FileAttachment.message_id.is_(None),  # Only unattached files
+                    FileAttachment.upload_completed.is_(True),  # Only completed uploads
+                )
+            ).all()
+
+            # Update file attachments with message ID
+            for attachment in file_attachments:
+                attachment.message_id = db_message.id
+                session.add(attachment)
+
         # Update conversation timestamp
-        conversation.updated_at = datetime.now()
-        session.add(conversation)
+        parent_message.conversation.updated_at = datetime.now()
+        session.add(parent_message.conversation)
         session.commit()
         session.refresh(db_message)
 
-        # Convert to response model
+        # Get download URLs for attachments
+        attachments = []
+        for attachment in db_message.attachments:
+            download_url = storage.create_presigned_url(attachment.s3_key)
+            attachments.append(
+                {
+                    "id": str(attachment.id),
+                    "original_filename": attachment.original_filename,
+                    "file_type": attachment.file_type,
+                    "mime_type": attachment.mime_type,
+                    "file_size": attachment.file_size,
+                    "uploaded_at": attachment.uploaded_at,
+                    "download_url": download_url,
+                }
+            )
+
+        # Convert to response model with proper user data
         message_data = {
             "id": str(db_message.id),
             "content": db_message.content,
             "conversation_id": str(db_message.conversation_id),
-            "parent_id": str(db_message.parent_id),
+            "parent_id": str(db_message.parent_id) if db_message.parent_id else None,
             "created_at": db_message.created_at,
             "updated_at": db_message.updated_at,
             "user": {
@@ -404,9 +478,9 @@ async def create_reply(
                 "username": current_user.username,
                 "display_name": current_user.display_name,
                 "avatar_url": current_user.avatar_url,
-                "is_online": True,
+                "is_online": True,  # Since they're actively sending a message
             },
-            "attachments": [],
+            "attachments": attachments,
             "reactions": [],
         }
 
@@ -430,28 +504,39 @@ async def get_thread_messages(
 ):
     """Get all messages in a thread."""
     with Session(engine) as session:
-        # Get parent message and verify access
+        # Get parent message to verify access
         parent_message = session.get(Message, message_id)
         if not parent_message:
-            raise HTTPException(status_code=404, detail="Parent message not found")
+            raise HTTPException(status_code=404, detail="Message not found")
 
         # Verify access to conversation
         verify_conversation_access(
             session, parent_message.conversation_id, current_user.id
         )
 
-        # Get thread messages
-        query = (
-            select(Message)
-            .where(Message.parent_id == message_id)
-            .order_by(Message.created_at.asc())
-        )
-
+        # Get all replies
+        query = select(Message).where(Message.parent_id == message_id)
         messages = session.exec(query).all()
 
-        # Convert to response model with proper user data
+        # Convert to response model
         message_list = []
         for message in messages:
+            # Get download URLs for attachments
+            attachments = []
+            for attachment in message.attachments:
+                download_url = storage.create_presigned_url(attachment.s3_key)
+                attachments.append(
+                    {
+                        "id": str(attachment.id),
+                        "original_filename": attachment.original_filename,
+                        "file_type": attachment.file_type,
+                        "mime_type": attachment.mime_type,
+                        "file_size": attachment.file_size,
+                        "uploaded_at": attachment.uploaded_at,
+                        "download_url": download_url,
+                    }
+                )
+
             message_data = {
                 "id": str(message.id),
                 "content": message.content,
@@ -459,6 +544,7 @@ async def get_thread_messages(
                 "parent_id": str(message.parent_id) if message.parent_id else None,
                 "created_at": message.created_at,
                 "updated_at": message.updated_at,
+                "reply_count": 0,  # Thread messages can't have replies
                 "user": {
                     "id": str(message.user.id),
                     "email": message.user.email,
@@ -467,17 +553,7 @@ async def get_thread_messages(
                     "avatar_url": message.user.avatar_url,
                     "is_online": message.user.is_online,
                 },
-                "attachments": [
-                    {
-                        "id": str(a.id),
-                        "original_filename": a.original_filename,
-                        "file_type": a.file_type,
-                        "mime_type": a.mime_type,
-                        "file_size": a.file_size,
-                        "uploaded_at": a.uploaded_at,
-                    }
-                    for a in message.attachments
-                ],
+                "attachments": attachments,
                 "reactions": [
                     {
                         "id": str(r.id),
