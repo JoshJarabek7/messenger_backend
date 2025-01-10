@@ -245,7 +245,7 @@ async def join_workspace(
 
         for channel in public_channels:
             channel_member = ConversationMember(
-                channel_id=channel.id,
+                conversation_id=channel.id,
                 user_id=current_user.id,
                 joined_at=datetime.now(UTC),
             )

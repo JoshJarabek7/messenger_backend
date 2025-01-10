@@ -1,15 +1,17 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlmodel import Session, and_, or_, select
-from sqlalchemy import Engine
 from typing import List
 from uuid import UUID
-from pydantic import BaseModel
 
-from app.utils.db import get_db
-from app.models import Conversation, User, ChannelType
-from app.utils.auth import get_current_user
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
+from sqlalchemy import Engine
+from sqlmodel import Session, and_, or_, select
+
+from app.models import ChannelType, Conversation, User
 from app.schemas import ConversationInfo
-from app.utils.access import verify_workspace_access, get_accessible_conversations
+from app.utils.access import get_accessible_conversations, verify_workspace_access
+from app.utils.auth import get_current_user
+from app.utils.db import get_db
+from app.websocket import WebSocketMessageType, manager
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
@@ -37,6 +39,14 @@ async def create_conversation(
                     detail="participant_id required for DM conversations",
                 )
 
+            # Verify that the participant exists
+            participant = session.get(User, data.participant_id)
+            if not participant:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Participant not found",
+                )
+
             # Check if DM conversation already exists
             existing_conversation = session.exec(
                 select(Conversation).where(
@@ -56,11 +66,41 @@ async def create_conversation(
 
             if existing_conversation:
                 # Convert UUIDs to strings in the model dump
-                data = existing_conversation.model_dump()
-                data["id"] = str(data["id"])
-                if data.get("workspace_id"):
-                    data["workspace_id"] = str(data["workspace_id"])
-                return ConversationInfo.model_validate(data)
+                conv_data = existing_conversation.model_dump()
+                conv_data["id"] = str(conv_data["id"])
+                if conv_data.get("workspace_id"):
+                    conv_data["workspace_id"] = str(conv_data["workspace_id"])
+                if conv_data.get("participant_1_id"):
+                    conv_data["participant_1_id"] = str(conv_data["participant_1_id"])
+                    # Load participant 1 data
+                    participant_1 = session.get(
+                        User, existing_conversation.participant_1_id
+                    )
+                    if participant_1:
+                        conv_data["participant_1"] = {
+                            "id": str(participant_1.id),
+                            "username": participant_1.username,
+                            "display_name": participant_1.display_name,
+                            "email": participant_1.email,
+                            "avatar_url": participant_1.avatar_url,
+                            "is_online": participant_1.is_online,
+                        }
+                if conv_data.get("participant_2_id"):
+                    conv_data["participant_2_id"] = str(conv_data["participant_2_id"])
+                    # Load participant 2 data
+                    participant_2 = session.get(
+                        User, existing_conversation.participant_2_id
+                    )
+                    if participant_2:
+                        conv_data["participant_2"] = {
+                            "id": str(participant_2.id),
+                            "username": participant_2.username,
+                            "display_name": participant_2.display_name,
+                            "email": participant_2.email,
+                            "avatar_url": participant_2.avatar_url,
+                            "is_online": participant_2.is_online,
+                        }
+                return ConversationInfo.model_validate(conv_data)
 
             # Create new DM conversation
             conversation = Conversation(
@@ -95,11 +135,50 @@ async def create_conversation(
         session.refresh(conversation)
 
         # Convert UUIDs to strings in the model dump
-        data = conversation.model_dump()
-        data["id"] = str(data["id"])
-        if data.get("workspace_id"):
-            data["workspace_id"] = str(data["workspace_id"])
-        return ConversationInfo.model_validate(data)
+        conv_data = conversation.model_dump()
+        conv_data["id"] = str(conv_data["id"])
+        if conv_data.get("workspace_id"):
+            conv_data["workspace_id"] = str(conv_data["workspace_id"])
+
+        # Load participant data
+        if conversation.participant_1_id:
+            participant_1 = session.get(User, conversation.participant_1_id)
+            if participant_1:
+                conv_data["participant_1"] = {
+                    "id": str(participant_1.id),
+                    "username": participant_1.username,
+                    "display_name": participant_1.display_name,
+                    "email": participant_1.email,
+                    "avatar_url": participant_1.avatar_url,
+                    "is_online": participant_1.is_online,
+                }
+
+        if conversation.participant_2_id:
+            participant_2 = session.get(User, conversation.participant_2_id)
+            if participant_2:
+                conv_data["participant_2"] = {
+                    "id": str(participant_2.id),
+                    "username": participant_2.username,
+                    "display_name": participant_2.display_name,
+                    "email": participant_2.email,
+                    "avatar_url": participant_2.avatar_url,
+                    "is_online": participant_2.is_online,
+                }
+
+        # Notify participants via WebSocket
+        if conversation.conversation_type == ChannelType.DIRECT:
+            # Subscribe both users to the conversation
+            manager.subscribe_to_conversation(current_user.id, conversation.id)
+            manager.subscribe_to_conversation(data.participant_id, conversation.id)
+
+            # Send notification to both users
+            await manager.broadcast_to_users(
+                [current_user.id, data.participant_id],
+                WebSocketMessageType.CONVERSATION_CREATED,
+                conv_data,
+            )
+
+        return ConversationInfo.model_validate(conv_data)
 
 
 @router.get("/recent", response_model=List[ConversationInfo])
@@ -134,7 +213,39 @@ async def get_recent_conversations(
         # Execute query
         conversations = session.exec(query).all()
 
-        # Convert to response model
-        return [
-            ConversationInfo.model_validate(conv.model_dump()) for conv in conversations
-        ]
+        # Load participant data for each conversation
+        result = []
+        for conv in conversations:
+            conv_data = conv.model_dump()
+            conv_data["id"] = str(conv.id)
+            if conv_data.get("workspace_id"):
+                conv_data["workspace_id"] = str(conv_data["workspace_id"])
+
+            # Load participant data
+            if conv.participant_1_id:
+                participant_1 = session.get(User, conv.participant_1_id)
+                if participant_1:
+                    conv_data["participant_1"] = {
+                        "id": str(participant_1.id),
+                        "username": participant_1.username,
+                        "display_name": participant_1.display_name,
+                        "email": participant_1.email,
+                        "avatar_url": participant_1.avatar_url,
+                        "is_online": participant_1.is_online,
+                    }
+
+            if conv.participant_2_id:
+                participant_2 = session.get(User, conv.participant_2_id)
+                if participant_2:
+                    conv_data["participant_2"] = {
+                        "id": str(participant_2.id),
+                        "username": participant_2.username,
+                        "display_name": participant_2.display_name,
+                        "email": participant_2.email,
+                        "avatar_url": participant_2.avatar_url,
+                        "is_online": participant_2.is_online,
+                    }
+
+            result.append(ConversationInfo.model_validate(conv_data))
+
+        return result

@@ -35,69 +35,183 @@ async def websocket_endpoint(
                     )
 
                     # Handle different message types
-                    if message_type == "subscribe_channel":
+                    if message_type == "subscribe":
                         channel_id = message_data.get("channel_id")
                         if channel_id:
-                            print(f"Subscribing user {user.id} to channel {channel_id}")
+                            print("\n🔍 Handling subscription request")
+                            print(
+                                f"User {user.id} requesting to subscribe to channel {channel_id}"
+                            )
                             try:
-                                manager.subscribe_to_channel(user.id, UUID(channel_id))
-                                await websocket.send_json(
-                                    {
-                                        "type": "subscribed",
-                                        "data": {"channel_id": channel_id},
-                                    }
+                                channel_uuid = UUID(channel_id)
+                                print(f"Converting channel ID to UUID: {channel_uuid}")
+
+                                # Subscribe to the channel
+                                manager.subscribe_to_conversation(user.id, channel_uuid)
+                                print(
+                                    f"Successfully subscribed user {user.id} to conversation {channel_uuid}"
                                 )
-                            except ValueError:
-                                print(f"Invalid channel ID format: {channel_id}")
+
+                                # Send acknowledgment
+                                ack_message = {
+                                    "type": "ack",
+                                    "data": {
+                                        "received_type": "subscribe",
+                                        "channel_id": str(channel_uuid),
+                                        "timestamp": datetime.now(UTC).isoformat(),
+                                    },
+                                }
+                                print(f"Sending acknowledgment: {ack_message}")
+                                await websocket.send_json(ack_message)
+                                print("Acknowledgment sent successfully")
+
+                            except ValueError as e:
+                                error = f"Invalid channel ID format: {channel_id} - {str(e)}"
+                                print(f"Error: {error}")
                                 await websocket.send_json(
                                     {
                                         "type": "error",
-                                        "data": {
-                                            "message": "Invalid channel ID format"
-                                        },
+                                        "data": {"message": error},
+                                    }
+                                )
+                            except Exception as e:
+                                error = f"Error subscribing to channel: {str(e)}"
+                                print(f"Error: {error}")
+                                await websocket.send_json(
+                                    {
+                                        "type": "error",
+                                        "data": {"message": error},
                                     }
                                 )
 
-                    elif message_type == "unsubscribe_channel":
+                    elif message_type == "unsubscribe":
                         channel_id = message_data.get("channel_id")
                         if channel_id:
+                            print("\n🔍 Handling unsubscribe request")
                             print(
-                                f"Unsubscribing user {user.id} from channel {channel_id}"
+                                f"User {user.id} requesting to unsubscribe from channel {channel_id}"
                             )
                             try:
-                                manager.unsubscribe_from_channel(
-                                    user.id, UUID(channel_id)
+                                channel_uuid = UUID(channel_id)
+                                print(f"Converting channel ID to UUID: {channel_uuid}")
+
+                                # Unsubscribe from the channel
+                                manager.unsubscribe_from_conversation(
+                                    user.id, channel_uuid
                                 )
-                                await websocket.send_json(
-                                    {
-                                        "type": "unsubscribed",
-                                        "data": {"channel_id": channel_id},
-                                    }
+                                print(
+                                    f"Successfully unsubscribed user {user.id} from conversation {channel_uuid}"
                                 )
-                            except ValueError:
-                                print(f"Invalid channel ID format: {channel_id}")
+
+                                # Send acknowledgment
+                                ack_message = {
+                                    "type": "ack",
+                                    "data": {
+                                        "received_type": "unsubscribe",
+                                        "channel_id": str(channel_uuid),
+                                        "timestamp": datetime.now(UTC).isoformat(),
+                                    },
+                                }
+                                print(f"Sending acknowledgment: {ack_message}")
+                                await websocket.send_json(ack_message)
+                                print("Acknowledgment sent successfully")
+
+                            except ValueError as e:
+                                error = f"Invalid channel ID format: {channel_id} - {str(e)}"
+                                print(f"Error: {error}")
                                 await websocket.send_json(
                                     {
                                         "type": "error",
-                                        "data": {
-                                            "message": "Invalid channel ID format"
-                                        },
+                                        "data": {"message": error},
+                                    }
+                                )
+                            except Exception as e:
+                                error = f"Error unsubscribing from channel: {str(e)}"
+                                print(f"Error: {error}")
+                                await websocket.send_json(
+                                    {
+                                        "type": "error",
+                                        "data": {"message": error},
+                                    }
+                                )
+
+                    elif message_type == "verify_subscription":
+                        channel_id = message_data.get("channel_id")
+                        if channel_id:
+                            print("\n🔍 Handling subscription verification request")
+                            print(
+                                f"User {user.id} verifying subscription to channel {channel_id}"
+                            )
+                            try:
+                                channel_uuid = UUID(channel_id)
+                                print(f"Converting channel ID to UUID: {channel_uuid}")
+
+                                # Check if user is subscribed
+                                is_subscribed = (
+                                    user.id
+                                    in manager.conversation_subscriptions.get(
+                                        channel_uuid, set()
+                                    )
+                                )
+                                print(
+                                    f"Subscription status: {'Subscribed' if is_subscribed else 'Not subscribed'}"
+                                )
+
+                                # Send verification response
+                                verification_message = {
+                                    "type": "ack",
+                                    "data": {
+                                        "received_type": "verify_subscription",
+                                        "channel_id": str(channel_uuid),
+                                        "is_subscribed": is_subscribed,
+                                        "timestamp": datetime.now(UTC).isoformat(),
+                                    },
+                                }
+                                print(
+                                    f"Sending verification response: {verification_message}"
+                                )
+                                await websocket.send_json(verification_message)
+                                print("Verification response sent successfully")
+
+                            except ValueError as e:
+                                error = f"Invalid channel ID format: {channel_id} - {str(e)}"
+                                print(f"Error: {error}")
+                                await websocket.send_json(
+                                    {
+                                        "type": "error",
+                                        "data": {"message": error},
+                                    }
+                                )
+                            except Exception as e:
+                                error = f"Error verifying subscription: {str(e)}"
+                                print(f"Error: {error}")
+                                await websocket.send_json(
+                                    {
+                                        "type": "error",
+                                        "data": {"message": error},
                                     }
                                 )
 
                     elif message_type == WebSocketMessageType.PING:
                         await manager.handle_ping(user.id, connection_id)
+                        print(f"\n🔍 Handled ping from user {user.id}")
 
-                    # Send acknowledgment
-                    await websocket.send_json(
-                        {
+                    # Send acknowledgment for other message types
+                    if message_type not in [
+                        "subscribe",
+                        "unsubscribe",
+                        "verify_subscription",
+                    ]:
+                        ack_message = {
                             "type": "ack",
                             "data": {
                                 "received_type": message_type,
                                 "timestamp": datetime.now(UTC).isoformat(),
                             },
                         }
-                    )
+                        print(f"\nSending general acknowledgment: {ack_message}")
+                        await websocket.send_json(ack_message)
+                        print("Acknowledgment sent successfully")
 
                 except json.JSONDecodeError:
                     print(f"Invalid JSON received: {raw_data}")

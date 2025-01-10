@@ -41,6 +41,7 @@ class WebSocketMessageType(str, Enum):
     USER_PRESENCE = "user_presence"
     PING = "ping"
     FILE_DELETED = "file_deleted"
+    CONVERSATION_CREATED = "conversation_created"
 
 
 """SESSION MANAGEMENT"""
@@ -312,23 +313,49 @@ class ConnectionManager:
     async def broadcast_to_conversation(
         self, conversation_id: UUID, message_type: WebSocketMessageType, data: Any
     ):
-        """
-        Broadcast a message to all users in a conversation.
-        """
-        if conversation_id not in self.conversation_subscriptions:
-            return
+        """Broadcast a message to all users subscribed to a conversation."""
+        print(f"\n🔍 Broadcasting to conversation {conversation_id}")
+        print(f"Message type: {message_type}")
+        print(f"Data: {data}")
 
-        message = {"type": message_type, "data": data}
+        # Log all conversation subscriptions
+        print("\nAll conversation subscriptions:")
+        for conv_id, user_ids in self.conversation_subscriptions.items():
+            print(f"Conversation {conv_id}: {len(user_ids)} subscribers")
+            print(f"Subscribed users: {user_ids}")
 
+        # Get subscribers for this conversation
+        subscribers = self.conversation_subscriptions.get(conversation_id, set())
+        print(f"\nSubscribers for conversation {conversation_id}: {subscribers}")
+
+        # Log active connections
+        print("\nActive connections:")
+        for user_id, connections in self.active_connections.items():
+            print(f"User {user_id}: {len(connections)} connections")
+
+        # Prepare message
+        message = {
+            "type": message_type,
+            "data": data,
+        }
         encoded_message = json.dumps(message, cls=UUIDEncoder)
 
-        for user_id in self.conversation_subscriptions[conversation_id]:
+        # Broadcast to subscribers
+        for user_id in subscribers:
             if user_id in self.active_connections:
-                for websocket in self.active_connections[user_id].values():
+                connections = self.active_connections[user_id]
+                print(f"\nSending to user {user_id} ({len(connections)} connections)")
+                for connection_id, websocket in connections.items():
                     try:
+                        print(f"Sending via connection {connection_id}")
                         await websocket.send_text(encoded_message)
+                        print(f"Successfully sent to connection {connection_id}")
                     except Exception as e:
-                        print(f"Error sending message to user {user_id}: {e}")
+                        print(f"Error sending to connection {connection_id}: {e}")
+            else:
+                print(f"User {user_id} has no active connections")
+
+        print("\nBroadcast complete\n")
 
 
 # Create a global instance

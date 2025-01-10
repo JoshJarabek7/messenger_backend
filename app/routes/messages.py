@@ -233,11 +233,14 @@ async def create_message(
         message_info = MessageInfo.model_validate(message_data)
 
         # Broadcast to conversation subscribers
+        print(f"Broadcasting message to conversation {conversation_id}")
+        print(f"Message data: {message_info.model_dump()}")
         await manager.broadcast_to_conversation(
             conversation_id,
             WebSocketMessageType.MESSAGE_SENT,
             message_info.model_dump(),
         )
+        print("Message broadcast complete")
 
         return message_info
 
