@@ -3,6 +3,7 @@
 A modern real-time chat backend built with FastAPI and WebSockets, providing the API for the Slack clone frontend.
 
 Frontend repository: [messenger_frontend](https://github.com/JoshJarabek7/messenger_frontend)
+Devops repository: [devops](https://github.com/JoshJarabek7/messenger_devops)
 
 ## Features
 
