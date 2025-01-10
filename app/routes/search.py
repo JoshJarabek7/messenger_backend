@@ -15,10 +15,22 @@ from app.models import (
     Workspace,
     WorkspaceMember,
 )
+from app.storage import Storage
 from app.utils.auth import get_current_user
 from app.utils.db import get_session
+from app.websocket import manager
 
 router = APIRouter(prefix="/api/search", tags=["search"])
+
+# Initialize storage
+storage = Storage()
+
+
+def get_presigned_avatar_url(avatar_url: Optional[str]) -> Optional[str]:
+    """Helper function to get presigned URL for avatar"""
+    if not avatar_url:
+        return None
+    return storage.create_presigned_url(avatar_url)
 
 
 class SearchType(str, Enum):
@@ -65,9 +77,9 @@ async def search_global(
                 "id": str(user.id),
                 "username": user.username,
                 "display_name": user.display_name,
-                "avatar_url": user.avatar_url,
+                "avatar_url": get_presigned_avatar_url(user.avatar_url),
                 "email": user.email,
-                "is_online": user.is_online,
+                "is_online": manager.is_user_online(user.id),
             }
             for user in users
         ]
@@ -154,7 +166,7 @@ async def search_global(
                     "id": str(user.id),
                     "username": user.username,
                     "display_name": user.display_name,
-                    "avatar_url": user.avatar_url,
+                    "avatar_url": get_presigned_avatar_url(user.avatar_url),
                 },
             }
             for message, user in messages
@@ -217,7 +229,7 @@ async def search_global(
                     "id": str(user.id),
                     "username": user.username,
                     "display_name": user.display_name,
-                    "avatar_url": user.avatar_url,
+                    "avatar_url": get_presigned_avatar_url(user.avatar_url),
                 },
                 "message": {
                     "id": str(message.id),

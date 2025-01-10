@@ -115,7 +115,7 @@ async def get_messages(
                     "avatar_url": storage.create_presigned_url(message.user.avatar_url)
                     if message.user.avatar_url
                     else None,
-                    "is_online": message.user.is_online,
+                    "is_online": manager.is_user_online(message.user.id),
                 },
                 "attachments": attachments,
                 "reactions": [
@@ -132,7 +132,7 @@ async def get_messages(
                             )
                             if r.user.avatar_url
                             else None,
-                            "is_online": r.user.is_online,
+                            "is_online": manager.is_user_online(r.user.id),
                         },
                     }
                     for r in message.reactions
@@ -224,7 +224,7 @@ async def create_message(
                 "avatar_url": storage.create_presigned_url(current_user.avatar_url)
                 if current_user.avatar_url
                 else None,
-                "is_online": True,  # Since they're actively sending a message
+                "is_online": manager.is_user_online(current_user.id),
             },
             "attachments": attachments,
             "reactions": [],
@@ -298,7 +298,7 @@ async def add_reaction(
                 "avatar_url": storage.create_presigned_url(message.user.avatar_url)
                 if message.user.avatar_url
                 else None,
-                "is_online": message.user.is_online,
+                "is_online": manager.is_user_online(message.user.id),
             },
             "attachments": [
                 {
@@ -324,7 +324,7 @@ async def add_reaction(
                         "avatar_url": storage.create_presigned_url(r.user.avatar_url)
                         if r.user.avatar_url
                         else None,
-                        "is_online": r.user.is_online,
+                        "is_online": manager.is_user_online(r.user.id),
                     },
                 }
                 for r in message.reactions
@@ -397,7 +397,7 @@ async def remove_reaction(
                 "avatar_url": storage.create_presigned_url(message.user.avatar_url)
                 if message.user.avatar_url
                 else None,
-                "is_online": message.user.is_online,
+                "is_online": manager.is_user_online(message.user.id),
             },
             "attachments": [
                 {
@@ -423,7 +423,7 @@ async def remove_reaction(
                         "avatar_url": storage.create_presigned_url(r.user.avatar_url)
                         if r.user.avatar_url
                         else None,
-                        "is_online": r.user.is_online,
+                        "is_online": manager.is_user_online(r.user.id),
                     },
                 }
                 for r in message.reactions
@@ -525,7 +525,7 @@ async def create_reply(
                 "avatar_url": storage.create_presigned_url(current_user.avatar_url)
                 if current_user.avatar_url
                 else None,
-                "is_online": True,  # Since they're actively sending a message
+                "is_online": manager.is_user_online(current_user.id),
             },
             "attachments": attachments,
             "reactions": [],
@@ -536,7 +536,7 @@ async def create_reply(
         # Broadcast to conversation subscribers
         await manager.broadcast_to_conversation(
             parent_message.conversation_id,
-            WebSocketMessageType.MESSAGE_SENT,
+            WebSocketMessageType.THREAD_REPLY,
             message_info.model_dump(),
         )
 
@@ -600,7 +600,7 @@ async def get_thread_messages(
                     "avatar_url": storage.create_presigned_url(message.user.avatar_url)
                     if message.user.avatar_url
                     else None,
-                    "is_online": message.user.is_online,
+                    "is_online": manager.is_user_online(message.user.id),
                 },
                 "attachments": attachments,
                 "reactions": [
@@ -617,7 +617,7 @@ async def get_thread_messages(
                             )
                             if r.user.avatar_url
                             else None,
-                            "is_online": r.user.is_online,
+                            "is_online": manager.is_user_online(r.user.id),
                         },
                     }
                     for r in message.reactions

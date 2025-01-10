@@ -23,6 +23,7 @@ from app.storage import Storage
 from app.utils.access import get_accessible_conversations, verify_workspace_access
 from app.utils.auth import get_current_user
 from app.utils.db import get_db
+from app.websocket import WebSocketMessageType, manager
 
 router = APIRouter(prefix="/api/workspaces", tags=["workspaces"])
 
@@ -252,6 +253,39 @@ async def join_workspace(
             session.add(channel_member)
 
         session.commit()
+
+        # Get all workspace members to notify them
+        workspace_members = session.exec(
+            select(WorkspaceMember).where(
+                WorkspaceMember.workspace_id == workspace_id,
+                WorkspaceMember.user_id != current_user.id,
+            )
+        ).all()
+        member_ids = [m.user_id for m in workspace_members]
+
+        # Initialize storage for avatar URL
+        storage = Storage()
+
+        # Broadcast workspace_member_added event to all workspace members
+        message_data = {
+            "workspace_id": str(workspace_id),
+            "user_id": str(current_user.id),
+            "role": "member",
+            "user": {
+                "id": str(current_user.id),
+                "username": current_user.username,
+                "display_name": current_user.display_name,
+                "email": current_user.email,
+                "avatar_url": storage.create_presigned_url(current_user.avatar_url)
+                if current_user.avatar_url
+                else None,
+            },
+        }
+        await manager.broadcast_to_users(
+            member_ids,
+            WebSocketMessageType.WORKSPACE_MEMBER_ADDED,
+            message_data,
+        )
 
         return {"id": str(workspace.id), "name": workspace.name, "slug": workspace.slug}
 
@@ -553,3 +587,122 @@ async def update_workspace_member(
             "role": member.role,
             "joined_at": member.joined_at,
         }
+
+
+@router.post("/{workspace_id}/leave")
+async def leave_workspace(
+    workspace_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Leave a workspace. If the user is the owner, delete the entire workspace."""
+    print(f"\n=== User {current_user.id} leaving workspace {workspace_id} ===")
+    storage = Storage()
+
+    with Session(db) as session:
+        # Get the workspace and check membership
+        workspace = session.get(Workspace, workspace_id)
+        if not workspace:
+            raise HTTPException(status_code=404, detail="Workspace not found")
+
+        # Get the user's role in the workspace
+        member = session.exec(
+            select(WorkspaceMember).where(
+                WorkspaceMember.workspace_id == workspace_id,
+                WorkspaceMember.user_id == current_user.id,
+            )
+        ).first()
+
+        if not member:
+            raise HTTPException(
+                status_code=403, detail="You are not a member of this workspace"
+            )
+
+        # Check if there are any other owners
+        other_owners = session.exec(
+            select(WorkspaceMember).where(
+                WorkspaceMember.workspace_id == workspace_id,
+                WorkspaceMember.user_id != current_user.id,
+                WorkspaceMember.role == "owner",
+            )
+        ).all()
+
+        # If user is the owner and there are no other owners, delete the entire workspace
+        if workspace.created_by_id == current_user.id and not other_owners:
+            print(
+                f"User is workspace owner and no other owners exist, deleting workspace {workspace_id}"
+            )
+
+            # Delete all files from S3
+            file_attachments = session.exec(
+                select(FileAttachment)
+                .join(Message)
+                .join(Conversation)
+                .where(Conversation.workspace_id == workspace_id)
+            ).all()
+
+            for attachment in file_attachments:
+                try:
+                    storage.delete_file(attachment.s3_key)
+                except Exception as e:
+                    print(f"Error deleting file {attachment.s3_key} from S3: {e}")
+                session.delete(attachment)
+
+            # Delete all messages in workspace conversations
+            messages = session.exec(
+                select(Message)
+                .join(Conversation)
+                .where(Conversation.workspace_id == workspace_id)
+            ).all()
+            for message in messages:
+                session.delete(message)
+
+            # Delete all conversations in the workspace
+            conversations = session.exec(
+                select(Conversation).where(Conversation.workspace_id == workspace_id)
+            ).all()
+            for conversation in conversations:
+                session.delete(conversation)
+
+            # Delete the workspace itself
+            session.delete(workspace)
+            session.commit()
+
+            # Notify all workspace members about deletion
+            workspace_members = [member.user_id for member in workspace.members]
+            message_data = {
+                "type": WebSocketMessageType.WORKSPACE_DELETED,
+                "data": {"workspace_id": str(workspace_id)},
+            }
+            await manager.broadcast_to_users(workspace_members, message_data)
+        else:
+            # For owners with other owners, admins, and regular members, just remove their membership
+            print(f"User is {member.role}, removing from workspace {workspace_id}")
+            session.delete(member)
+            session.commit()
+
+            # Get remaining members before sending notifications
+            remaining_members = session.exec(
+                select(WorkspaceMember).where(
+                    WorkspaceMember.workspace_id == workspace_id,
+                    WorkspaceMember.user_id != current_user.id,
+                )
+            ).all()
+
+            # Notify remaining workspace members about the user leaving
+            workspace_members = [m.user_id for m in remaining_members]
+            message_data = {
+                "type": WebSocketMessageType.WORKSPACE_MEMBER_LEFT,
+                "data": {
+                    "workspace_id": str(workspace_id),
+                    "user_id": str(current_user.id),
+                    "role": member.role,  # Include the role in the notification
+                },
+            }
+            await manager.broadcast_to_users(
+                workspace_members,
+                WebSocketMessageType.WORKSPACE_MEMBER_LEFT,
+                message_data,
+            )
+
+        return {"status": "success"}

@@ -12,8 +12,12 @@ from app.models import (
     User,
     UserSession,
 )
+from app.storage import Storage
 from app.utils.auth import auth_utils
 from app.utils.db import get_db
+
+# Initialize storage
+storage = Storage()
 
 
 class PermissionError(Exception):
@@ -42,48 +46,18 @@ class WebSocketMessageType(str, Enum):
     PING = "ping"
     FILE_DELETED = "file_deleted"
     CONVERSATION_CREATED = "conversation_created"
+    CONVERSATION_DELETED = "conversation_deleted"
+    CHANNEL_CREATED = "channel_created"
+    CHANNEL_DELETED = "channel_deleted"
+    WORKSPACE_DELETED = "workspace_deleted"
+    WORKSPACE_MEMBER_LEFT = "workspace_member_left"
+    WORKSPACE_MEMBER_ADDED = "workspace_member_added"
 
 
 """SESSION MANAGEMENT"""
 
 
 class SessionManager:
-    def update_user_status(self, user_id: UUID, is_online: bool):
-        """
-        Update the user's status in the database.
-        Only marks a user as offline if they have no remaining active sessions.
-        """
-        engine = get_db()
-        with Session(engine) as session:
-            try:
-                if not is_online:
-                    # Check if user has any remaining active sessions
-                    active_sessions = session.exec(
-                        select(UserSession).where(UserSession.user_id == user_id)
-                    ).all()
-
-                    # Only mark as offline if there are no active sessions
-                    if not active_sessions:
-                        print(f"Marking user {user_id} as offline")
-                        user = session.exec(
-                            select(User).where(User.id == user_id)
-                        ).first()
-                        if user:
-                            user.is_online = is_online
-                            session.add(user)
-                            session.commit()
-                else:
-                    # If marking online, update immediately
-                    print(f"Marking user {user_id} as online")
-                    user = session.exec(select(User).where(User.id == user_id)).first()
-                    if user:
-                        user.is_online = is_online
-                        session.add(user)
-                        session.commit()
-            except Exception as e:
-                print(f"Error updating user status for {user_id}: {e}")
-                raise
-
     def update_user_last_active(self, user_id: UUID):
         """
         Update the user's last active time in the database.
@@ -164,6 +138,12 @@ class ConnectionManager:
         ] = {}  # conversation_id -> set of user_ids
         self.session_manager = session_manager
 
+    def is_user_online(self, user_id: UUID) -> bool:
+        """Check if a user has any active connections."""
+        return user_id in self.active_connections and bool(
+            self.active_connections[user_id]
+        )
+
     async def connect(self, websocket: WebSocket, token: str) -> tuple[User, str]:
         """
         Connect and authenticate a WebSocket connection.
@@ -186,9 +166,11 @@ class ConnectionManager:
             # Store the connection
             self.active_connections[user.id][connection_id] = websocket
 
-            # Create session and update user status
+            # Create session
             self.session_manager.create_user_session(user.id, connection_id)
-            self.session_manager.update_user_status(user.id, True)
+
+            # Broadcast presence update
+            await self.broadcast_presence_update(user.id, True)
 
             return user, connection_id
 
@@ -208,10 +190,59 @@ class ConnectionManager:
             if not self.active_connections[user_id]:
                 del self.active_connections[user_id]
 
-            # Update session and user status
+            # Delete session
             self.session_manager.delete_user_session(user_id, connection_id)
+
+            # If user has no more active connections, broadcast offline status
             if user_id not in self.active_connections:
-                self.session_manager.update_user_status(user_id, False)
+                await self.broadcast_presence_update(user_id, False)
+
+    async def broadcast_presence_update(self, user_id: UUID, is_online: bool):
+        """
+        Broadcast a user's presence update to all connected users.
+        """
+        print(f"Broadcasting presence update for user {user_id}: {is_online}")
+
+        # Get user details for the broadcast
+        user = user_manager.get_user_by_id(user_id)
+        if not user:
+            print(f"User {user_id} not found")
+            return
+
+        # Get pre-signed URL for avatar if it exists
+        avatar_url = (
+            storage.create_presigned_url(user.avatar_url) if user.avatar_url else None
+        )
+
+        # Prepare presence update message
+        presence_message = {
+            "type": WebSocketMessageType.USER_PRESENCE,
+            "data": {
+                "user": {
+                    "id": str(user.id),
+                    "username": user.username,
+                    "display_name": user.display_name,
+                    "avatar_url": avatar_url,
+                    "is_online": is_online,
+                }
+            },
+        }
+
+        # Broadcast to all connected users
+        for user_connections in self.active_connections.values():
+            for connection in user_connections.values():
+                try:
+                    await connection.send_json(presence_message)
+                except Exception as e:
+                    print(f"Error sending presence update: {e}")
+
+    async def handle_ping(self, user_id: UUID, connection_id: str):
+        """Handle ping message from client."""
+        self.session_manager.update_user_last_active(user_id)
+
+    def get_active_users(self) -> list[UUID]:
+        """Get list of currently active user IDs."""
+        return list(self.active_connections.keys())
 
     def subscribe_to_channel(self, user_id: UUID, channel_id: UUID):
         """Subscribe a user to a channel."""
@@ -287,10 +318,6 @@ class ConnectionManager:
                         await websocket.send_text(encoded_message)
                     except Exception as e:
                         print(f"Error sending message to user {user_id}: {e}")
-
-    async def handle_ping(self, user_id: UUID, connection_id: str):
-        """Handle ping message from client."""
-        self.session_manager.update_user_last_active(user_id)
 
     async def broadcast_to_users(
         self, user_ids: list[UUID], message_type: WebSocketMessageType, data: dict

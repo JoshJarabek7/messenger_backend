@@ -7,14 +7,26 @@ from pydantic import BaseModel
 from sqlalchemy import Engine
 from sqlmodel import Session, select
 
-from app.models import ChannelType, Conversation, ConversationMember, User
+from app.models import (
+    ChannelType,
+    Conversation,
+    ConversationMember,
+    FileAttachment,
+    Message,
+    User,
+    WorkspaceMember,
+)
 from app.schemas import ChannelMemberInfo, ConversationInfo
+from app.storage import Storage
 from app.utils.access import verify_workspace_access
 from app.utils.auth import get_current_user
 from app.utils.db import get_db
-from app.websocket import manager
+from app.websocket import WebSocketMessageType, manager
 
 router = APIRouter(prefix="/api/channels", tags=["channels"])
+
+# Initialize storage
+storage = Storage()
 
 
 class ChannelMemberCreate(BaseModel):
@@ -25,6 +37,7 @@ class ChannelMemberCreate(BaseModel):
 class ChannelCreate(BaseModel):
     name: str
     description: str | None = None
+    workspace_id: UUID
 
 
 def verify_conversation_access(
@@ -146,25 +159,23 @@ async def get_channel_members(
         ).all()
 
         # Convert to response model
-        return [
-            ChannelMemberInfo(
-                user={
-                    "id": str(user.id),
+        members_data = []
+        for member, user in members:
+            members_data.append(
+                {
+                    "id": user.id,
                     "username": user.username,
                     "display_name": user.display_name,
                     "avatar_url": user.avatar_url,
-                    "is_online": user.is_online,
-                },
-                is_admin=member.is_admin,
-                joined_at=member.joined_at,
+                    "is_online": manager.is_user_online(user.id),
+                }
             )
-            for member, user in members
-        ]
+
+        return members_data
 
 
 @router.post("", response_model=ConversationInfo)
 async def create_channel(
-    workspace_id: UUID,
     channel: ChannelCreate,
     current_user: User = Depends(get_current_user),
     engine: Engine = Depends(get_db),
@@ -172,13 +183,28 @@ async def create_channel(
     """Create a new channel in a workspace."""
     with Session(engine) as session:
         # Verify workspace access
-        verify_workspace_access(session, workspace_id, current_user.id)
+        verify_workspace_access(session, channel.workspace_id, current_user.id)
+
+        # Check if channel name already exists in this workspace
+        existing_channel = session.exec(
+            select(Conversation).where(
+                Conversation.workspace_id == channel.workspace_id,
+                Conversation.name == channel.name,
+                Conversation.conversation_type == ChannelType.PUBLIC,
+            )
+        ).first()
+
+        if existing_channel:
+            raise HTTPException(
+                status_code=400,
+                detail="A channel with this name already exists in this workspace",
+            )
 
         # Create the channel
         new_channel = Conversation(
             name=channel.name,
             description=channel.description,
-            workspace_id=workspace_id,
+            workspace_id=channel.workspace_id,
             conversation_type=ChannelType.PUBLIC,
             created_at=datetime.now(UTC),
             updated_at=datetime.now(UTC),
@@ -187,14 +213,130 @@ async def create_channel(
         session.commit()
         session.refresh(new_channel)
 
-        # Add creator to the channel
-        channel_member = ConversationMember(
-            conversation_id=new_channel.id,
-            user_id=current_user.id,
-            is_admin=True,
-            joined_at=datetime.now(UTC),
-        )
-        session.add(channel_member)
+        # Get all workspace members
+        workspace_members = session.exec(
+            select(User)
+            .join(User.workspaces)
+            .where(User.workspaces.any(id=channel.workspace_id))
+        ).all()
+
+        # Add all workspace members to the channel
+        for member in workspace_members:
+            channel_member = ConversationMember(
+                conversation_id=new_channel.id,
+                user_id=member.id,
+                # Make the creator an admin
+                is_admin=member.id == current_user.id,
+                joined_at=datetime.now(UTC),
+            )
+            session.add(channel_member)
         session.commit()
 
-        return ConversationInfo.model_validate(new_channel.model_dump())
+        # Convert to response model
+        channel_info = ConversationInfo(
+            id=str(new_channel.id),
+            name=new_channel.name,
+            description=new_channel.description,
+            conversation_type=ChannelType.PUBLIC,
+            workspace_id=str(new_channel.workspace_id),
+            created_at=new_channel.created_at,
+            updated_at=new_channel.updated_at,
+        )
+
+        # Send WebSocket notification to all workspace members
+        await manager.broadcast_to_workspace(
+            channel.workspace_id,
+            WebSocketMessageType.CHANNEL_CREATED,
+            channel_info.model_dump(),
+        )
+
+        return channel_info
+
+
+@router.delete("/{channel_id}")
+async def delete_channel(
+    channel_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Delete a channel and all its messages and files."""
+    print(f"\n=== Deleting Channel {channel_id} ===")
+    print(f"Requested by user: {current_user.id}")
+
+    with Session(db) as session:
+        # Get the channel (which is a conversation)
+        channel = session.get(Conversation, channel_id)
+        if not channel:
+            raise HTTPException(status_code=404, detail="Channel not found")
+
+        # Verify this is actually a channel
+        if channel.conversation_type not in [ChannelType.PUBLIC, ChannelType.PRIVATE]:
+            raise HTTPException(status_code=400, detail="This is not a channel")
+
+        # Get the workspace members to check permissions
+        workspace_member = session.exec(
+            select(WorkspaceMember).where(
+                WorkspaceMember.workspace_id == channel.workspace_id,
+                WorkspaceMember.user_id == current_user.id,
+            )
+        ).first()
+
+        if not workspace_member or workspace_member.role not in ["admin", "owner"]:
+            raise HTTPException(
+                status_code=403,
+                detail="Only workspace admins and owners can delete channels",
+            )
+
+        # Get all workspace members for notification BEFORE deletion
+        workspace_members = session.exec(
+            select(WorkspaceMember).where(
+                WorkspaceMember.workspace_id == channel.workspace_id
+            )
+        ).all()
+        member_ids = [member.user_id for member in workspace_members]
+
+        # Store channel info for notification
+        channel_info = {
+            "id": str(channel_id),
+            "workspace_id": str(channel.workspace_id),
+            "name": channel.name,
+        }
+
+        # Get all messages with their file attachments
+        messages = session.exec(
+            select(Message).where(Message.conversation_id == channel.id)
+        ).all()
+
+        # Delete all file attachments from S3 and database
+        for message in messages:
+            file_attachments = session.exec(
+                select(FileAttachment).where(FileAttachment.message_id == message.id)
+            ).all()
+
+            for attachment in file_attachments:
+                # Delete from S3
+                try:
+                    storage.delete_file(attachment.s3_key)
+                except Exception as e:
+                    print(f"Error deleting file {attachment.s3_key} from S3: {e}")
+
+                # Delete from database
+                session.delete(attachment)
+
+            # Delete the message
+            session.delete(message)
+
+        # Delete the channel (conversation)
+        session.delete(channel)
+        session.commit()
+
+        print(f"Successfully deleted channel {channel_id}")
+
+        # Send WebSocket notification about channel deletion to all workspace members
+        await manager.broadcast_to_users(
+            member_ids,
+            WebSocketMessageType.CHANNEL_DELETED,
+            channel_info,
+        )
+
+        return {"status": "success", "message": "Channel deleted successfully"}

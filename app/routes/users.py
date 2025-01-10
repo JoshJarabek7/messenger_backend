@@ -13,6 +13,16 @@ from app.utils.db import get_session
 
 router = APIRouter(prefix="/api/users", tags=["users"])
 
+# Initialize storage
+storage = Storage()
+
+
+def get_presigned_avatar_url(avatar_url: Optional[str]) -> Optional[str]:
+    """Helper function to get presigned URL for avatar"""
+    if not avatar_url:
+        return None
+    return storage.create_presigned_url(avatar_url)
+
 
 class UserUpdate(BaseModel):
     username: Optional[str] = None
@@ -50,7 +60,7 @@ async def search_users(
             "id": str(user.id),
             "username": user.username,
             "display_name": user.display_name,
-            "avatar_url": user.avatar_url,
+            "avatar_url": get_presigned_avatar_url(user.avatar_url),
             "email": user.email if workspace_id else None,
         }
         for user in users

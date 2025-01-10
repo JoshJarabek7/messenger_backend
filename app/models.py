@@ -111,7 +111,6 @@ class User(SQLModel, table=True):
     avatar_url: Optional[str] = None
     status: Optional[str] = None
     last_active: datetime = Field(default_factory=get_current_time)
-    is_online: bool = Field(default=False)
     created_at: datetime = Field(default_factory=get_current_time)
     updated_at: datetime = Field(default_factory=get_current_time)
 

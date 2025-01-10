@@ -8,10 +8,14 @@ from pydantic import EmailStr
 from sqlmodel import Session, select
 
 from app.models import User, WorkspaceMember
+from app.storage import Storage
 from app.utils.db import get_db
 
 # Password hashing configuration
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# Initialize storage
+storage = Storage()
 
 
 class WorkspaceRole(str, Enum):
@@ -43,6 +47,11 @@ class UserManager:
                 user = session.exec(select(User).where(User.id == user_id)).first()
                 if not user:
                     raise HTTPException(status_code=404, detail="User not found")
+
+                # Generate pre-signed URL for avatar if it exists
+                if user.avatar_url:
+                    user.avatar_url = storage.create_presigned_url(user.avatar_url)
+
                 return user
             except Exception as e:
                 print(f"Error fetching user by ID {user_id}: {e}")

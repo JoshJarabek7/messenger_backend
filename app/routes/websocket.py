@@ -196,9 +196,32 @@ async def websocket_endpoint(
                         await manager.handle_ping(user.id, connection_id)
                         print(f"\n🔍 Handled ping from user {user.id}")
 
+                    elif message_type == WebSocketMessageType.USER_PRESENCE:
+                        is_online = message_data.get("is_online", True)
+                        print(
+                            f"\n🔍 Handling presence update for user {user.id}: {is_online}"
+                        )
+                        await manager.handle_presence_update(user.id, is_online)
+
                     elif message_type == WebSocketMessageType.USER_TYPING:
                         conversation_id = message_data.get("conversation_id")
                         if conversation_id:
+                            # Skip temporary conversation IDs
+                            if conversation_id.startswith("temp_"):
+                                print(
+                                    f"\n🔍 Ignoring typing update for temporary conversation {conversation_id}"
+                                )
+                                # Still send acknowledgment
+                                ack_message = {
+                                    "type": "ack",
+                                    "data": {
+                                        "received_type": message_type,
+                                        "timestamp": datetime.now(UTC).isoformat(),
+                                    },
+                                }
+                                await websocket.send_json(ack_message)
+                                continue
+
                             try:
                                 conversation_uuid = UUID(conversation_id)
                                 print(
@@ -215,7 +238,9 @@ async def websocket_endpoint(
                                             "avatar_url": user.avatar_url,
                                         },
                                         "conversation_id": str(conversation_uuid),
-                                        "is_typing": True,
+                                        "is_typing": message_data.get(
+                                            "is_typing", True
+                                        ),
                                     },
                                 )
                             except ValueError as e:
@@ -250,25 +275,31 @@ async def websocket_endpoint(
                                 "timestamp": datetime.now(UTC).isoformat(),
                             },
                         }
-                        print(f"\nSending general acknowledgment: {ack_message}")
                         await websocket.send_json(ack_message)
-                        print("Acknowledgment sent successfully")
 
-                except json.JSONDecodeError:
-                    print(f"Invalid JSON received: {raw_data}")
+                except json.JSONDecodeError as e:
+                    print(f"Error decoding WebSocket message: {e}")
                     await websocket.send_json(
-                        {"type": "error", "data": {"message": "Invalid JSON format"}}
+                        {
+                            "type": "error",
+                            "data": {"message": "Invalid JSON format"},
+                        }
                     )
                 except Exception as e:
                     print(f"Error handling WebSocket message: {e}")
                     await websocket.send_json(
-                        {"type": "error", "data": {"message": str(e)}}
+                        {
+                            "type": "error",
+                            "data": {"message": str(e)},
+                        }
                     )
 
         except WebSocketDisconnect:
             print(f"WebSocket disconnected for user {user.id}")
             await manager.disconnect(user.id, connection_id)
+            await manager.broadcast_presence_update(user.id, False)
 
     except Exception as e:
-        print(f"WebSocket connection error: {e}")
+        print(f"Error in WebSocket connection: {e}")
         await websocket.close(code=1008, reason=str(e))
+        raise
