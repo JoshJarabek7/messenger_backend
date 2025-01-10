@@ -196,6 +196,47 @@ async def websocket_endpoint(
                         await manager.handle_ping(user.id, connection_id)
                         print(f"\n🔍 Handled ping from user {user.id}")
 
+                    elif message_type == WebSocketMessageType.USER_TYPING:
+                        conversation_id = message_data.get("conversation_id")
+                        if conversation_id:
+                            try:
+                                conversation_uuid = UUID(conversation_id)
+                                print(
+                                    f"\n🔍 Broadcasting typing update for user {user.id} in conversation {conversation_uuid}"
+                                )
+                                await manager.broadcast_to_conversation(
+                                    conversation_uuid,
+                                    WebSocketMessageType.USER_TYPING,
+                                    {
+                                        "user": {
+                                            "id": str(user.id),
+                                            "username": user.username,
+                                            "display_name": user.display_name,
+                                            "avatar_url": user.avatar_url,
+                                        },
+                                        "conversation_id": str(conversation_uuid),
+                                        "is_typing": True,
+                                    },
+                                )
+                            except ValueError as e:
+                                error = f"Invalid conversation ID format: {conversation_id} - {str(e)}"
+                                print(f"Error: {error}")
+                                await websocket.send_json(
+                                    {
+                                        "type": "error",
+                                        "data": {"message": error},
+                                    }
+                                )
+                            except Exception as e:
+                                error = f"Error broadcasting typing update: {str(e)}"
+                                print(f"Error: {error}")
+                                await websocket.send_json(
+                                    {
+                                        "type": "error",
+                                        "data": {"message": error},
+                                    }
+                                )
+
                     # Send acknowledgment for other message types
                     if message_type not in [
                         "subscribe",
