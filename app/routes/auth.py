@@ -51,7 +51,7 @@ async def register(user_data: UserCreate, response: Response):
             key="access_token",
             value=tokens.access_token,
             httponly=True,
-            secure=True,
+            secure=False,
             samesite="lax",
             max_age=30 * 60,  # 30 minutes
         )
@@ -60,7 +60,7 @@ async def register(user_data: UserCreate, response: Response):
             key="refresh_token",
             value=tokens.refresh_token,
             httponly=True,
-            secure=True,
+            secure=False,
             samesite="lax",
             max_age=7 * 24 * 60 * 60,  # 7 days
         )
@@ -94,7 +94,7 @@ async def login(user_data: UserLogin, response: Response):
         key="access_token",
         value=tokens.access_token,
         httponly=True,
-        secure=True,
+        secure=False,
         samesite="lax",
         max_age=30 * 60,  # 30 minutes
     )
@@ -103,7 +103,7 @@ async def login(user_data: UserLogin, response: Response):
         key="refresh_token",
         value=tokens.refresh_token,
         httponly=True,
-        secure=True,
+        secure=False,
         samesite="lax",
         max_age=7 * 24 * 60 * 60,  # 7 days
     )
@@ -137,7 +137,7 @@ async def refresh_token(request: Request, response: Response):
             key="access_token",
             value=tokens.access_token,
             httponly=True,
-            secure=True,
+            secure=False,
             samesite="lax",
             max_age=30 * 60,  # 30 minutes
         )
@@ -146,7 +146,7 @@ async def refresh_token(request: Request, response: Response):
             key="refresh_token",
             value=tokens.refresh_token,
             httponly=True,
-            secure=True,
+            secure=False,
             samesite="lax",
             max_age=7 * 24 * 60 * 60,  # 7 days
         )
@@ -180,9 +180,9 @@ async def verify_token(request: Request, user: User = Depends(get_current_user))
 async def logout(response: Response):
     """Clear both token cookies"""
     response.delete_cookie(
-        key="access_token", secure=True, httponly=True, samesite="lax"
+        key="access_token", secure=False, httponly=True, samesite="lax"
     )
     response.delete_cookie(
-        key="refresh_token", secure=True, httponly=True, samesite="lax"
+        key="refresh_token", secure=False, httponly=True, samesite="lax"
     )
     return {"message": "Successfully logged out"}
