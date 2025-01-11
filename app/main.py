@@ -1,5 +1,4 @@
 import logging
-import os
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -44,15 +43,7 @@ async def startup_event():
 
 
 # CORS middleware configuration
-origins = [
-    "http://localhost:5173",  # Dev frontend
-    "http://localhost:4173",  # Preview frontend
-    "http://localhost:3000",  # Alternative dev port
-    "http://127.0.0.1:5173",  # Local IP
-    "http://127.0.0.1:4173",  # Local IP preview
-    "http://127.0.0.1:3000",  # Local IP alternative
-    *os.getenv("CORS_ORIGINS", "").split(","),  # Additional origins from env
-]
+origins = ["*"]
 
 app.add_middleware(
     CORSMiddleware,
