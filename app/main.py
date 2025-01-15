@@ -4432,7 +4432,7 @@ async def leave_workspace(
     return {"message": "Successfully left workspace"}
 
 
-@app.websocket("/ws")
+@router.websocket("/ws")
 async def websocket_endpoint(
     websocket: WebSocket,
     access_token: str = Cookie(...),
