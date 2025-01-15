@@ -28,8 +28,8 @@ done
 
 >&2 echo "Postgres is up - executing command"
 
-# Initialize the database
-python -m app.init_db
+# # Initialize the database
+# python -m app.init_db
 
 # Start the application
 exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload 
