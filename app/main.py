@@ -808,7 +808,6 @@ class Storage:
                 Conditions=conditions,
                 ExpiresIn=3600,
             )
-            logger.info(f"Presigned URL generated response: {response}")
 
             return {
                 "upload_data": response,
@@ -829,7 +828,6 @@ class Storage:
         Generate a presigned URL to read an S3 object
         """
         try:
-            logger.info(f"Generating presigned URL for {s3_key}")
             # Important: Make sure s3_key is not already a URL
             if s3_key.startswith("http"):
                 # Extract the actual key from the URL
@@ -840,7 +838,6 @@ class Storage:
                 Params={"Bucket": BUCKET_NAME, "Key": s3_key},
                 ExpiresIn=expiration,
             )
-            logger.info(f"Presigned URL generated response: {response}")
             return response
         except ClientError as e:
             logging.error(f"Error generating presigned URL: {e}")
@@ -870,11 +867,9 @@ class Storage:
         :return: True if successful, False otherwise
         """
         try:
-            logger.info(f"Uploading file to S3 with key: {s3_key}")
             self.s3_client.put_object(
                 Bucket=BUCKET_NAME, Key=s3_key, Body=file_data, ContentType=content_type
             )
-            logger.info(f"File uploaded successfully to S3 with key: {s3_key}")
             return True
         except ClientError as e:
             logging.error(f"Error uploading file to S3: {e}")
@@ -1847,8 +1842,6 @@ async def get_workspace(
         admins=admin_ids,
         members=member_ids,
     )
-
-    logger.info(f"Workspace response: {response}")
 
     return response
 
@@ -3073,10 +3066,6 @@ async def send_message(
         db=db,
     )
 
-    logger.info(
-        f"New message sent: id={new_message.id}, content={new_message.content}, parent_id={new_message.parent_id}"
-    )
-
     return MessageResponse(
         id=new_message.id,
         user_id=new_message.user_id,
@@ -3105,11 +3094,6 @@ async def get_message(
     if not message:
         raise HTTPException(status_code=404, detail="Message not found")
 
-    logger.info(
-        f"Getting message: id={message.id}, content={message.content}, parent_id={message.parent_id}"
-    )
-    logger.info(f"Message: {message}")
-    logger.info(f"Message reactions: {message.reactions}")
     reactions_map = {
         str(reaction.id): {
             "id": str(reaction.id),
@@ -3201,9 +3185,6 @@ async def add_reaction(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    logger.info(
-        f"Adding reaction: message_id={message_id}, emoji={reaction_data.emoji}"
-    )
     message = db.exec(select(Message).where(Message.id == message_id)).first()
     if message is None:
         raise HTTPException(status_code=404, detail="Message not found")
@@ -3226,7 +3207,6 @@ async def add_reaction(
             Reaction.emoji == reaction_data.emoji,
         )
     ).first()
-    logger.info(f"Existing reaction: {existing_reaction}")
     if existing_reaction is not None:
         raise HTTPException(status_code=400, detail="Reaction already exists")
 
@@ -3513,8 +3493,6 @@ async def get_file_download_url(
     presigned_url = storage.create_presigned_url(str(file.id))
     if not presigned_url:
         raise APIError(500, "Failed to generate download URL")
-
-    logger.info(f"Generated presigned URL for file {file.id}: {presigned_url}")
 
     return {"s3_url": presigned_url}
 
