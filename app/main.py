@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta, timezone
 from enum import Enum
 from os import getenv
 from typing import Any, Generator, Optional
+from urllib.parse import unquote
 from uuid import UUID, uuid4
 
 import boto3
@@ -37,7 +38,6 @@ from sqlmodel import (
     and_,
     create_engine,
     delete,
-    or_,
     select,
 )
 
@@ -273,7 +273,7 @@ class File(Base, table=True):
     """File model for uploaded files/attachments."""
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
-    original_filename: str = Field(max_length=255)
+    original_filename: str = Field(max_length=255)  # This is the field name
     file_type: FileType = Field(default=FileType.OTHER)
     mime_type: str = Field(max_length=127)
     file_size: int
@@ -293,6 +293,46 @@ class File(Base, table=True):
     user: User = Relationship(back_populates="files")
     workspace: Optional[Workspace] = Relationship(back_populates="files")
     conversation: Optional["Conversation"] = Relationship(back_populates="files")
+
+    # Important: The s3_key should be the same as the id
+    @property
+    def s3_key(self) -> str:
+        """Get the S3 key for this file, which is always its ID."""
+        return str(self.id)
+
+    @staticmethod
+    def clean_s3_key(key: str) -> str:
+        """Clean an S3 key to ensure it's just a UUID."""
+        if not key:
+            return key
+
+        if key.startswith("http"):
+            # Extract just the UUID from the URL
+            parts = key.split("/")
+            key = parts[-1].split("?")[0]
+
+            # Decode any URL encoding
+            while True:
+                decoded = unquote(key)
+                if decoded == key:
+                    break
+                key = decoded
+
+        return key
+
+    def __init__(self, **data):
+        """Initialize a File instance."""
+        # Clean s3_key if it's provided in the data
+        if "s3_key" in data:
+            cleaned_key = self.clean_s3_key(data.pop("s3_key"))
+            # Only try to convert to UUID if it's not already set
+            if "id" not in data:
+                try:
+                    data["id"] = UUID(cleaned_key)
+                except ValueError:
+                    # If conversion fails, generate a new UUID
+                    data["id"] = uuid4()
+        super().__init__(**data)
 
 
 class Conversation(Base, table=True):
@@ -628,6 +668,9 @@ class GetMessageResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     parent_id: UUID | None
+    reactions: dict[str, dict[str, str]]  # Changed to match the actual structure
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 class GetReactionResponse(BaseModel):
@@ -644,7 +687,6 @@ class ReactionResponse(BaseModel):
 
 
 class ReactionCreateRequest(BaseModel):
-    message_id: UUID
     emoji: str
 
 
@@ -669,16 +711,19 @@ class ChannelUpdateRequest(BaseModel):
 
 
 class FileResponse(BaseModel):
+    """Response model for file operations."""
+
     id: UUID
-    original_filename: str
+    original_filename: str  # Match the field name in File model
     file_type: FileType
     mime_type: str
     file_size: int
-    message_id: UUID | None
+    message_id: Optional[UUID] = None
     user_id: UUID
-    workspace_id: UUID | None
-    conversation_id: UUID | None
-    # Removed s3_key from response since it's the same as id
+    workspace_id: Optional[UUID] = None
+    conversation_id: Optional[UUID] = None
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 class Token(BaseModel):
@@ -763,6 +808,7 @@ class Storage:
                 Conditions=conditions,
                 ExpiresIn=3600,
             )
+            logger.info(f"Presigned URL generated response: {response}")
 
             return {
                 "upload_data": response,
@@ -781,17 +827,20 @@ class Storage:
     ) -> Optional[str]:
         """
         Generate a presigned URL to read an S3 object
-
-        :param s3_key: The key of the object in S3
-        :param expiration: Time in seconds for the presigned URL to remain valid
-        :return: Presigned URL as string. If error, returns None.
         """
         try:
+            logger.info(f"Generating presigned URL for {s3_key}")
+            # Important: Make sure s3_key is not already a URL
+            if s3_key.startswith("http"):
+                # Extract the actual key from the URL
+                s3_key = s3_key.split("/")[-1]
+
             response = self.s3_client.generate_presigned_url(
                 "get_object",
                 Params={"Bucket": BUCKET_NAME, "Key": s3_key},
                 ExpiresIn=expiration,
             )
+            logger.info(f"Presigned URL generated response: {response}")
             return response
         except ClientError as e:
             logging.error(f"Error generating presigned URL: {e}")
@@ -821,9 +870,11 @@ class Storage:
         :return: True if successful, False otherwise
         """
         try:
+            logger.info(f"Uploading file to S3 with key: {s3_key}")
             self.s3_client.put_object(
                 Bucket=BUCKET_NAME, Key=s3_key, Body=file_data, ContentType=content_type
             )
+            logger.info(f"File uploaded successfully to S3 with key: {s3_key}")
             return True
         except ClientError as e:
             logging.error(f"Error uploading file to S3: {e}")
@@ -851,12 +902,6 @@ class UserManager:
             user = db.exec(select(User).where(User.id == user_id)).first()
             if not user:
                 raise HTTPException(status_code=404, detail="User not found")
-
-            # Generate pre-signed URL for avatar if it exists
-            if user.s3_key:
-                storage = Storage()
-                user.s3_key = storage.create_presigned_url(user.s3_key)
-
             return user
         except Exception:
             raise
@@ -1455,9 +1500,9 @@ async def does_email_exist(email: str, db: Session = Depends(get_db)):
 
 class UserUpdateRequest(BaseModel):
     display_name: str | None
-    bio: str | None
     email: EmailStr | None
     username: str | None
+    s3_key: str | None
 
 
 @router.put("/user/me", response_model=GetUserResponse)
@@ -1469,10 +1514,31 @@ async def update_me(
     this_user = db.exec(select(User).where(User.id == user.id)).first()
     if this_user is None:
         raise HTTPException(status_code=404, detail="User not found")
-    this_user.display_name = updates.display_name or this_user.display_name
-    this_user.bio = updates.bio or this_user.bio
-    this_user.email = updates.email or this_user.email
-    this_user.username = updates.username or this_user.username
+
+    # Check if the username has changed and if it already exists
+    if updates.username and updates.username != this_user.username:
+        existing_user = db.exec(
+            select(User).where(User.username == updates.username)
+        ).first()
+        if existing_user:
+            raise HTTPException(
+                status_code=409, detail="This username is already taken"
+            )
+        this_user.username = updates.username
+
+    if updates.display_name and updates.display_name != this_user.display_name:
+        this_user.display_name = updates.display_name
+
+    # Check if the email has changed and if it already exists
+    if updates.email and updates.email != this_user.email:
+        existing_user = db.exec(select(User).where(User.email == updates.email)).first()
+        if existing_user:
+            raise HTTPException(status_code=409, detail="This email is already taken")
+        this_user.email = updates.email
+
+    if updates.s3_key:
+        this_user.s3_key = updates.s3_key
+
     db.commit()
 
     # Send user updated event
@@ -1487,7 +1553,7 @@ async def update_me(
                 "email": this_user.email,
                 "display_name": this_user.display_name,
                 "s3_key": this_user.s3_key,
-                "is_online": this_user.is_online,
+                "is_online": True,
             },
         },
         db,
@@ -1767,7 +1833,7 @@ async def get_workspace(
         if m.role in [WorkspaceRole.ADMIN, WorkspaceRole.OWNER]
     ]
 
-    return WorkspaceResponse(
+    response = WorkspaceResponse(
         id=str(workspace.id),
         name=workspace.name,
         description=workspace.description,
@@ -1781,6 +1847,10 @@ async def get_workspace(
         admins=admin_ids,
         members=member_ids,
     )
+
+    logger.info(f"Workspace response: {response}")
+
+    return response
 
 
 @router.get("/workspaces", response_model=list[WorkspaceResponse])
@@ -2348,6 +2418,14 @@ class ChannelManager:
             )
             self.db.add(conversation_member)
 
+    def does_channel_exist(self, name: str, workspace_id: UUID) -> bool:
+        slug = name_to_slug(name)
+        query = select(Channel).where(
+            Channel.slug == slug, Channel.workspace_id == workspace_id
+        )
+        result = self.db.exec(query).first()
+        return result is not None
+
 
 @router.get("/channels/{channel_id}", response_model=ChannelResponse)
 async def get_channel(
@@ -2585,6 +2663,16 @@ async def delete_channel(
     )
 
     return {"status": "success"}
+
+
+@router.get("/workspaces/{workspace_id}/channels/exists")
+async def check_channel_exists(
+    workspace_id: UUID,
+    name: str,
+    db: Session = Depends(get_db),
+):
+    channel_manager = ChannelManager(db)
+    return {"exists": channel_manager.does_channel_exist(name, workspace_id)}
 
 
 @router.get("/workspaces/{workspace_id}/channels", response_model=list[ChannelResponse])
@@ -3020,6 +3108,16 @@ async def get_message(
     logger.info(
         f"Getting message: id={message.id}, content={message.content}, parent_id={message.parent_id}"
     )
+    logger.info(f"Message: {message}")
+    logger.info(f"Message reactions: {message.reactions}")
+    reactions_map = {
+        str(reaction.id): {
+            "id": str(reaction.id),
+            "user_id": str(reaction.user_id),
+            "emoji": reaction.emoji,
+        }
+        for reaction in message.reactions
+    }
 
     return GetMessageResponse(
         id=message.id,
@@ -3030,6 +3128,7 @@ async def get_message(
         created_at=message.created_at,
         updated_at=message.updated_at,
         parent_id=message.parent_id,
+        reactions=reactions_map,
     )
 
 
@@ -3102,6 +3201,9 @@ async def add_reaction(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    logger.info(
+        f"Adding reaction: message_id={message_id}, emoji={reaction_data.emoji}"
+    )
     message = db.exec(select(Message).where(Message.id == message_id)).first()
     if message is None:
         raise HTTPException(status_code=404, detail="Message not found")
@@ -3124,6 +3226,7 @@ async def add_reaction(
             Reaction.emoji == reaction_data.emoji,
         )
     ).first()
+    logger.info(f"Existing reaction: {existing_reaction}")
     if existing_reaction is not None:
         raise HTTPException(status_code=400, detail="Reaction already exists")
 
@@ -3200,133 +3303,179 @@ async def remove_reaction(
 
 
 class FileManager:
-    def __init__(self, db: Session = Depends(get_db)):
+    def __init__(self, db: Session):
         self.db = db
-
-    def verify_file_access(self, file_id: UUID, user: User) -> bool:
-        query = (
-            select(File)
-            .where(File.id == file_id)
-            .where(
-                or_(
-                    File.user_id == user.id,
-                    File.workspace_id.in_(
-                        select(Workspace.id)
-                        .join(WorkspaceMember)
-                        .where(WorkspaceMember.user_id == user.id)
-                    ),
-                    File.conversation_id.in_(
-                        select(Conversation.id)
-                        .join(ConversationMember)
-                        .where(ConversationMember.user_id == user.id)
-                    ),
-                )
-            )
-        )
-        result = self.db.exec(query)
-        return result.first() is not None
-
-    def get_file(self, file_id: UUID) -> File:
-        query = select(File).where(File.id == file_id)
-        result = self.db.exec(query)
-        return result.first()
+        self.storage = Storage()
 
     async def create_file(
         self,
-        file_data: UploadFile,
+        file: UploadFile,
         user: User,
         workspace_id: UUID | None = None,
         conversation_id: UUID | None = None,
         message_id: UUID | None = None,
     ) -> File:
-        # Verify permissions first
-        if workspace_id:
-            workspace_member = self.db.exec(
-                select(WorkspaceMember)
-                .where(WorkspaceMember.workspace_id == workspace_id)
-                .where(WorkspaceMember.user_id == user.id)
-            ).first()
-            if not workspace_member:
-                raise HTTPException(
-                    status_code=403, detail="You do not have access to this workspace"
-                )
+        """Create a new file record and upload to S3."""
+        try:
+            # Read file content
+            file_content = await file.read()
+            file_size = len(file_content)
 
-        if conversation_id:
-            conversation_member = self.db.exec(
-                select(ConversationMember)
-                .where(ConversationMember.conversation_id == conversation_id)
-                .where(ConversationMember.user_id == user.id)
-            ).first()
-            if not conversation_member:
-                raise HTTPException(
-                    status_code=403,
-                    detail="You do not have access to this conversation",
-                )
-
-        # Read file content
-        file_content = await file_data.read()
-        file_size = len(file_content)
-
-        # Create file record first to get the ID
-        new_file = File(
-            original_filename=file_data.filename,
-            file_type=FileType.from_filename(file_data.filename),
-            mime_type=file_data.content_type,
-            file_size=file_size,
-            user_id=user.id,
-            workspace_id=workspace_id,
-            conversation_id=conversation_id,
-            message_id=message_id,
-        )
-        self.db.add(new_file)
-        self.db.commit()
-        self.db.refresh(new_file)
-
-        # Use the file ID as the S3 key
-        storage = Storage()
-        if not storage.upload_file(
-            file_content, str(new_file.id), file_data.content_type
-        ):
-            # If S3 upload fails, delete the database record
-            self.db.delete(new_file)
-            self.db.commit()
-            raise HTTPException(status_code=500, detail="Failed to upload file to S3")
-
-        return new_file
-
-    def delete_file(self, file_id: UUID, user: User) -> None:
-        file = self.get_file(file_id)
-        if not file:
-            raise HTTPException(status_code=404, detail="File not found")
-
-        # Only file owner or workspace admin can delete files
-        can_delete = file.user_id == user.id
-        if file.workspace_id:
-            workspace_role = self.db.exec(
-                select(WorkspaceMember)
-                .where(WorkspaceMember.workspace_id == file.workspace_id)
-                .where(WorkspaceMember.user_id == user.id)
-                .where(
-                    WorkspaceMember.role.in_([WorkspaceRole.ADMIN, WorkspaceRole.OWNER])
-                )
-            ).first()
-            can_delete = can_delete or bool(workspace_role)
-
-        if not can_delete:
-            raise HTTPException(
-                status_code=403, detail="You do not have permission to delete this file"
+            # Get or guess content type
+            content_type = (
+                file.content_type
+                or mimetypes.guess_type(file.filename)[0]
+                or "application/octet-stream"
             )
 
+            # Create file record with UUID
+            file_record = File(
+                id=uuid4(),  # This will also be used as the S3 key
+                original_filename=file.filename,
+                file_type=FileType.from_filename(file.filename),
+                mime_type=content_type,
+                file_size=file_size,
+                user_id=user.id,
+                workspace_id=workspace_id,
+                conversation_id=conversation_id,
+                message_id=message_id,
+            )
+
+            # Upload to S3 using the file's ID as the key
+            try:
+                upload_success = self.storage.upload_file(
+                    file_content,
+                    str(file_record.id),  # Use ID as S3 key
+                    content_type,
+                )
+                if not upload_success:
+                    raise HTTPException(
+                        status_code=500, detail="Failed to upload file to storage"
+                    )
+            except Exception as e:
+                logger.error(f"S3 upload error: {str(e)}")
+                raise HTTPException(
+                    status_code=500, detail="Failed to upload file to storage"
+                )
+
+            # Save file record to database
+            self.db.add(file_record)
+            self.db.commit()
+            self.db.refresh(file_record)
+
+            return FileResponse(
+                id=file_record.id,
+                original_filename=file_record.original_filename,
+                file_type=file_record.file_type,
+                mime_type=file_record.mime_type,
+                file_size=file_record.file_size,
+                message_id=file_record.message_id,
+                user_id=file_record.user_id,
+                workspace_id=file_record.workspace_id,
+                conversation_id=file_record.conversation_id,
+            )
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"File creation error: {str(e)}")
+            raise HTTPException(status_code=500, detail="Failed to process file upload")
+        finally:
+            await file.close()
+
+    def delete_file(self, file_id: UUID, user: User) -> None:
+        """Delete a file and its S3 object."""
+        file = self.get_file(file_id)
+        if not file:
+            raise NotFoundError("File", str(file_id))
+
+        # Verify ownership or admin access
+        if file.user_id != user.id:
+            # Check if user is workspace admin if file is in a workspace
+            if file.workspace_id:
+                member = self.db.exec(
+                    select(WorkspaceMember).where(
+                        WorkspaceMember.workspace_id == file.workspace_id,
+                        WorkspaceMember.user_id == user.id,
+                        WorkspaceMember.role.in_(
+                            [WorkspaceRole.ADMIN, WorkspaceRole.OWNER]
+                        ),
+                    )
+                ).first()
+                if not member:
+                    raise ForbiddenError(
+                        "You don't have permission to delete this file"
+                    )
+            else:
+                raise ForbiddenError("You don't have permission to delete this file")
+
+        # Delete from S3
+        try:
+            if not self.storage.delete_file(str(file.id)):  # Use ID as S3 key
+                raise HTTPException(
+                    status_code=500, detail="Failed to delete file from storage"
+                )
+        except Exception as e:
+            logger.error(f"S3 deletion error: {str(e)}")
+            raise HTTPException(
+                status_code=500, detail="Failed to delete file from storage"
+            )
+
+        # Delete from database
         self.db.delete(file)
         self.db.commit()
 
+    def get_file(self, file_id: UUID) -> Optional[File]:
+        """Get a file by its ID."""
+        return self.db.exec(select(File).where(File.id == file_id)).first()
 
-@router.get("/files/{file_id}", response_model=FileResponse)
-async def get_file(
+    def verify_file_access(self, file_id: UUID, user: User) -> bool:
+        """Verify if a user has access to a file."""
+        file = self.get_file(file_id)
+        if not file:
+            return False
+
+        # File owner always has access
+        if file.user_id == user.id:
+            return True
+
+        user_returned = self.db.exec(
+            select(User).where(User.s3_key == str(file.id))
+        ).first()
+        if user_returned:
+            return True
+
+        # If file is in a workspace, check workspace membership
+        if file.workspace_id:
+            member = self.db.exec(
+                select(WorkspaceMember).where(
+                    WorkspaceMember.workspace_id == file.workspace_id,
+                    WorkspaceMember.user_id == user.id,
+                    WorkspaceMember.is_active == True,
+                )
+            ).first()
+            return member is not None
+
+        # If file is in a conversation, check conversation membership
+        if file.conversation_id:
+            member = self.db.exec(
+                select(ConversationMember).where(
+                    ConversationMember.conversation_id == file.conversation_id,
+                    ConversationMember.user_id == user.id,
+                )
+            ).first()
+            return member is not None
+
+        return False
+
+
+@router.get("/files/{file_id}")
+async def get_file_info(
     file_id: UUID,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    """Get file information."""
     file_manager = FileManager(db)
 
     # Verify access
@@ -3338,7 +3487,36 @@ async def get_file(
     if not file:
         raise NotFoundError("File", str(file_id))
 
-    return file
+    return FileResponse.model_validate(file)
+
+
+@router.get("/files/{file_id}/download")
+async def get_file_download_url(
+    file_id: UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get a presigned URL for downloading a file."""
+    file_manager = FileManager(db)
+
+    # Verify access
+    if not file_manager.verify_file_access(file_id, user):
+        raise ForbiddenError("You don't have access to this file")
+
+    # Get file
+    file = file_manager.get_file(file_id)
+    if not file:
+        raise NotFoundError("File", str(file_id))
+
+    # Get presigned URL using the file's ID as the S3 key
+    storage = Storage()
+    presigned_url = storage.create_presigned_url(str(file.id))
+    if not presigned_url:
+        raise APIError(500, "Failed to generate download URL")
+
+    logger.info(f"Generated presigned URL for file {file.id}: {presigned_url}")
+
+    return {"s3_url": presigned_url}
 
 
 @router.post("/files", response_model=FileResponse)
@@ -3932,6 +4110,23 @@ async def create_message(
     if member is None:
         raise HTTPException(status_code=403, detail="Not authorized")
 
+    workspace = db.exec(
+        select(Workspace).where(Workspace.id == conversation.workspace_id)
+    ).first()
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    # Handle file attachment if present
+    file = None
+    if message_data.file_id:
+        file = db.exec(select(File).where(File.id == message_data.file_id)).first()
+        if file is None:
+            raise HTTPException(
+                status_code=404, detail=f"File {message_data.file_id} not found"
+            )
+        file.workspace_id = workspace.id
+        file.workspace = workspace
+
     # Create message
     now = datetime.now(UTC)
     message = Message(
@@ -3942,19 +4137,20 @@ async def create_message(
         parent_id=message_data.parent_id,
         created_at=now,
         updated_at=now,
+        conversation=conversation,
+        attachment=file,
+        user=user,
     )
     db.add(message)
-
-    # Add file attachments if any
-    if message_data.file_id:
-        file = db.exec(select(File).where(File.id == message_data.file_id)).first()
-        if file is None:
-            raise HTTPException(
-                status_code=404, detail=f"File {message_data.file_id} not found"
-            )
-        file.message_id = message.id
-
     db.commit()
+    db.refresh(message)
+
+    # Update file with message reference if present
+    if file:
+        file.message = message
+        file.message_id = message.id
+        db.add(file)
+        db.commit()
 
     # Send message sent event with full message data
     await ws.broadcast_conversation_event(
@@ -3973,6 +4169,9 @@ async def create_message(
         db=db,
     )
 
+    # Create empty reactions map for new message
+    reactions_map = {}
+
     return GetMessageResponse(
         id=message.id,
         conversation_id=message.conversation_id,
@@ -3982,6 +4181,7 @@ async def create_message(
         created_at=message.created_at,
         updated_at=message.updated_at,
         parent_id=message.parent_id,
+        reactions=reactions_map,  # Add empty reactions map
     )
 
 
@@ -4101,85 +4301,6 @@ async def delete_conversation(
     return {"message": "Conversation deleted successfully"}
 
 
-@router.get("/files/{file_id}/download")
-async def get_file_download_url(
-    file_id: UUID,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """Get a presigned URL for downloading a file."""
-    file_manager = FileManager(db)
-
-    # Verify access
-    if not file_manager.verify_file_access(file_id, user):
-        raise ForbiddenError("You don't have access to this file")
-
-    # Get file
-    file = file_manager.get_file(file_id)
-    if not file:
-        raise NotFoundError("File", str(file_id))
-
-    # Get presigned URL
-    storage = Storage()
-    presigned_url = storage.create_presigned_url(file.id)
-    if not presigned_url:
-        raise APIError(500, "Failed to generate download URL")
-
-    return {"s3_url": presigned_url}
-
-
-@router.get("/workspaces/{workspace_id}/channels/exists")
-async def check_channel_exists(
-    workspace_id: UUID,
-    name: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    # Verify user has access to workspace
-    workspace = db.exec(select(Workspace).where(Workspace.id == workspace_id)).first()
-    if not workspace:
-        raise WORKSPACE_NOT_FOUND(workspace_id)
-
-    member = db.exec(
-        select(WorkspaceMember).where(
-            WorkspaceMember.workspace_id == workspace_id,
-            WorkspaceMember.user_id == user.id,
-        )
-    ).first()
-    if not member:
-        raise NOT_WORKSPACE_MEMBER()
-
-    # Check if channel exists with this name
-    channel_slug = name_to_slug(name)
-    channel = db.exec(
-        select(Channel).where(
-            Channel.workspace_id == workspace_id,
-            Channel.slug == channel_slug,
-        )
-    ).first()
-
-    return {"exists": channel is not None}
-
-
-@router.get("/workspaces/exists/{name}")
-async def check_workspace_exists(
-    name: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    # Convert name to slug
-    workspace_slug = name_to_slug(name)
-
-    # Check if workspace exists with this slug
-    workspace = db.exec(
-        select(Workspace).where(
-            Workspace.slug == workspace_slug,
-        )
-    ).first()
-
-    return {"exists": workspace is not None}
-
-
 @router.post("/workspaces/{workspace_id}/join")
 async def join_workspace(
     workspace_id: UUID,
@@ -4228,9 +4349,9 @@ async def join_workspace(
     db.commit()
 
     # Send user joined workspace event
-    await ws.broadcast_user_event(
+    await ws.broadcast_workspace_event(
         "user_joined_workspace",
-        user.id,
+        workspace_id,
         {
             "workspace_id": str(workspace_id),
             "user_id": str(user.id),

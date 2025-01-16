@@ -2,10 +2,10 @@ fastapi[standard]
 uvicorn
 sqlalchemy
 sqlmodel
-passlib[bcrypt]
+passlib[bcrypt, argon2]
 pydantic[email]
 python-jose[cryptography]
 psycopg2-binary
 python-dotenv
 boto3
-argon2-cffi
+
