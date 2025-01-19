@@ -1,11 +1,47 @@
-fastapi[standard]
-uvicorn
-sqlalchemy
-sqlmodel
-passlib[bcrypt, argon2]
+# Core Framework
+fastapi
+uvicorn[standard]
+pydantic-settings
+loguru
+unidecode
 pydantic[email]
-python-jose[cryptography]
+anyio
+# Database
+sqlmodel
 psycopg2-binary
-python-dotenv
-boto3
+pgvector
+alembic
+greenlet
 
+# Authentication & Security
+python-jose[cryptography]
+passlib[bcrypt, argon2]
+python-multipart
+
+# File Processing & Text Extraction
+python-magic  # For MIME type detection
+unstructured[all-docs]  # Best modern library for document parsing
+pytesseract  # For OCR
+Pillow  # For image processing
+
+# Vector Search & AI
+openai
+tiktoken
+
+# Storage
+boto3  # For S3
+
+# Testing
+pytest  # For testing
+pytest-asyncio
+pytest-cov
+pytest-mock
+httpx  # For async HTTP testing
+openai-responses
+moto[s3]
+# Development
+python-dotenv  # For local development
+black  # For code formatting
+nltk
+pytest-boto-mock
+pytest-xdist

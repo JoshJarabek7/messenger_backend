@@ -1,0 +1,24 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "slack-clone-backend"
+version = "0.1.0"
+authors = [{ name = "Your Name", email = "your.email@example.com" }]
+description = "A Slack clone backend"
+readme = "README.md"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --tb=short"
+filterwarnings = "ignore::DeprecationWarning"
+markers = ["slow", "integration", "unit"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]

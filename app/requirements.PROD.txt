@@ -1,0 +1,17 @@
+boto3
+fastapi
+uvicorn[standard]
+pydantic[email]
+loguru
+openai
+passlib[bcrypt, argon2]
+pgvector
+Pillow
+pydantic_settings
+pytesseract
+python-dotenv
+python-jose[cryptography]
+python_magic
+sqlmodel
+unidecode
+unstructured[all-docs]

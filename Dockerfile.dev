@@ -1,34 +1,47 @@
-# Use Python 3.13 slim image
 FROM python:3.13-slim
 
-# Set working directory
+# Set environment variables
+ENV PIP_NO_CACHE_DIR=off \
+    PIP_DISABLE_PIP_VERSION_CHECK=on \
+    PYTHONUNBUFFERED=1
+
+# Create a working directory
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
+# Install necessary system packages
+RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    cmake \
+    wget \
     curl \
+    libpq-dev \
+    tesseract-ocr \
+    libmagic-dev \
+    poppler-utils \
+    unpaper \
+    ffmpeg \
+    libtesseract-dev \
+    tesseract-ocr-eng \
+    protobuf-compiler \
+    libprotobuf-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
+# Copy requirements to container
 COPY requirements.txt .
+
+# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# Copy application code and startup script
 COPY ./app ./app
 COPY start.sh .
 
-# Set environment variables
-ENV PYTHONPATH=/app
-ENV PYTHONUNBUFFERED=1
-
-# Make start script executable
+# Make startup script executable
 RUN chmod +x start.sh
 
-# Add healthcheck
-HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --retries=3 \
+# Add healthcheck to monitor container health
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Run the startup script
-CMD ["./start.sh"] 
+# Set the default command to run the application
+CMD ["./start.sh"]
